@@ -1,0 +1,18 @@
+%s: rescue_support_cur_state(AREA_ID,TARGET_ID,VICTIMS_NUM,LOAD_DEMAND_NUM,
+                             IS_ALLOCATED,IS_COMPLETED,RESPONSIBLE_UAV_ID,CUR_TIMESTAMP).
+%s: nodes_config(NODE_ID,POS_X,POS_Y,VISIT_CAP).
+%s: cur_processes(REQ_UUID,PROC_ID,UAV_ID,R_W,TIME_INFO).
+%v: drone_rescue_targets(UAV_ID,AREA_ID,TARGET_ID,VICTIMS_NUM,LOAD_DEMAND_NUM,
+                         IS_ALLOCATED,IS_COMPLETED,POS_X,POS_Y).
+
+
+-rescue_support_cur_state(AID,TID,VN,LD,IA,IC,UID,CT)
+    :- cur_processes(RID,PID,UID,_,_), PID=0,
+    rescue_support_cur_state(AID,TID,VN,LD,IA,IC,UID,CT),
+    nodes_config(NID,PX,PY,_),NID=TID,
+    not drone_rescue_targets(UID,AID,TID,VN,LD,IA,IC,PX,PY).
++rescue_support_cur_state(AID,TID,VN,LD,IA,IC,UID,CT)
+    :- cur_processes(RID,PID,UID,_,_), PID=0,
+    drone_rescue_targets(UID,AID,TID,VN,LD,IA,IC,_,_),
+    CT='2018-11-01 00:00',
+    not rescue_support_cur_state(AID,TID,VN,LD,IA,IC,UID,CT).

@@ -1,0 +1,40 @@
+%s: charging_stations_config(STATION_ID,NODE_ID,CHARGING_CAP,QUEUE_CAP,DOCK_CAP).
+%s: charging_stations_cur_state(STATION_ID,IS_INSERVICE,CUR_UTILIZATION,QUEUE_LENGTH,DOCK_NUM,CUR_TIMESTAMP).
+%s: drones_cur_charging_targets(CUR_TIMESTAMP,STATION_ID,UAV_ID,WEIGHT).
+%s: cur_processes(REQ_UUID,PROC_ID,UAV_ID,R_W,TIME_INFO).
+%s: nodes_config(NODE_ID,POS_X,POS_Y,VISIT_CAP).
+%v: drone_charge_targets(UAV_ID,STATION_ID,NODE_ID,CHARGING_CAP,QUEUE_CAP,DOCK_CAP,
+                         IS_INSERVICE,CUR_UTILIZATION,QUEUE_LENGTH,DOCK_NUM,
+                         W,POS_X,POS_Y).
+
++charging_stations_cur_state(SID,II,CU,QL,DN,CT)
+    :- cur_processes(_,PID,UID,_,_), PID=0,
+    drones_cur_charging_targets(_,SID,UID,W),
+    charging_stations_config(SID,NID,CC,QC,DC),
+    nodes_config(NID,PX,PY,_),
+    drone_charge_targets(UID,SID,NID,CC,QC,DC,II,CU,QL,DN,W,PX,PY),
+    charging_stations_cur_state(SID,_,_,_,_,CT),
+    not charging_stations_cur_state(SID,II,CU,QL,DN,CT).
+-charging_stations_cur_state(SID,II,CU,QL,DN,CT)
+    :- cur_processes(_,PID,UID,_,_), PID=0,
+    drones_cur_charging_targets(_,SID,UID,W),
+    charging_stations_config(SID,NID,CC,QC,DC),
+    nodes_config(NID,PX,PY,_),
+    charging_stations_cur_state(SID,II,CU,QL,DN,CT),
+    not drone_charge_targets(UID,SID,NID,CC,QC,DC,II,CU,QL,DN,W,PX,PY).
+
++drones_cur_charging_targets(CT,SID,UID,W)
+    :- cur_processes(_,PID,UID,_,_), PID=0,
+    drone_charge_targets(UID,SID,NID,CC,QC,DC,II,CU,QL,DN,W,PX,PY),
+    charging_stations_config(SID,NID,CC,QC,DC),
+    charging_stations_cur_state(SID,II,CU,QL,DN,_),
+    nodes_config(NID,PX,PY,_),
+    drones_cur_charging_targets(CT,SID,UID,_),
+    not drones_cur_charging_targets(CT,SID,UID,W).
+-drones_cur_charging_targets(CT,SID,UID,W)
+    :- cur_processes(_,PID,UID,_,_), PID=0,
+    drones_cur_charging_targets(CT,SID,UID,W),
+    charging_stations_config(SID,NID,CC,QC,DC),
+    charging_stations_cur_state(SID,II,CU,QL,DN,_),
+    nodes_config(NID,PX,PY,_),
+    not drone_charge_targets(UID,SID,NID,CC,QC,DC,II,CU,QL,DN,W,PX,PY).

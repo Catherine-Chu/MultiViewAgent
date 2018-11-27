@@ -1,0 +1,20 @@
+%s: grid_nodes(NODE_ID,VISIT_COUNT,VISITED,VICTIMS_NUM,NEED_RESCUE,NODE_TYPE).
+%s: cur_processes(REQ_UUID,PROC_ID,UAV_ID,R_W,TIME_INFO).
+%s: drones_cur_state(UAV_ID, LOC_NODE_ID,VIEW_RANGE,LOAD_NUM,CUR_ELECTRICITY,FLYING_STATE,
+                     CUR_PATH_LENGTH,CUR_RESOURCE_COST,CUR_TIMESTAMP).
+%s: nodes_config(NODE_ID,POS_X,POS_Y,VISIT_CAP).
+%v: drone_local_nodes(UAV_ID,NODE_ID,VISIT_COUNT,VISITED,VICTIMS_NUM,NEED_RESCUE,NODE_TYPE,POS_X,POS_Y,VISIT_CAP).
+
+tmp_pos(UID,UPX,UPY,VR)
+    :- drones_cur_state(UID,NID,VR,_,_,_,_,_,_),nodes_config(NID,UPX,UPY,_),
+    cur_processes(RID,PID,UID,_,_), PID=0.
+tmp_range(UID,PX,PY)
+    :- grid_nodes(NID,_,_,_,_,_),nodes_config(NID,PX,PY,_),tmp_pos(UID,UPX,UPY,VR),
+    (UPX-PX)*(UPX-PX)+(UPY-PY)*(UPY-PY)<=VR*VR.
+
+-grid_nodes(NID,VCT,V,VN,NR,NT)
+    :- grid_nodes(NID,VCT,V,VN,NR,NT),nodes_config(NID,PX,PY,VC),tmp_range(UID,PX,PY),
+    not drone_local_nodes(UID,NID,VCT,V,VN,NR,NT,PX,PY,VC).
++grid_nodes(NID,VCT,V,VN,NR,NT)
+    :- drone_local_nodes(UID,NID,VCT,V,VN,NR,NT,PX,PY,VC),tmp_range(UID,PX,PY),
+    not grid_nodes(NID,VCT,V,VN,NR,NT).
