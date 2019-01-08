@@ -53,12 +53,14 @@ class Center:
         threading.stack_size(self.STATIC_INFO.THREAD_STACK_SIZE)  # control the stack memory size of each threads.
         self.query_tool = QueryTool(database='multiAgents')
         self.response_data = {}
+        self.query_tool.cur.execute("TRUNCATE TABLE public.cur_processes")
+        self.start_time = None
 
     def terminate(self):
         # 可以将未处理的请求用文件的形式暂存下来
         self._running = False
-        if self.socket:
-            self.socket.close()
+        # if self.socket:
+        #     self.socket.close()
         self.query_tool.clear_db_connection()
 
     def create_request_listener(self):
@@ -75,92 +77,96 @@ class Center:
         # 一直不accept，监听线程也会一直运行
         # 这里的while True是主线程(创立监听线程的父线程控制的)，也就是说父线程运行期间，不断的确认监听连接并处理收到的信息
         # 父线程无法在处理连接信息的同时并行的对存入队列中的请求进行处理(因为不能变成收到一个请求先处理让其他请求者等待)
+        self.start_time = time.time()
         while self._running:
             conn, addr = self.socket.accept()
             # 必须为每一个连接建立一个线程，不然center无法在与一个agent连接的情况下处理其他连接
             # 使用线程池的好处是可以限制线程池大小，避免建立无限多的连接
             # 线程池中进程默认为后台线程，建立后无法通过其他手段干预或强制停止（是说无法在代码中操作）？
             self.con_thread_pool.submit(self.echo_agent, conn, addr)
+            time_elapse = time.time() - self.start_time
+            if time_elapse > self.experiment_config.timeout:
+                self.terminate()
 
     def echo_agent(self, conn, addr):
-        with conn:
-            print("Connected by address: ", addr)
-            while True:
-                try:
-                    data = conn.recv(4096)
-                    if not data:
-                        break
-                    # 打印接收到的数据?
-                    # conn.sendall(data)
-                    print(data.decode())
-                    data = data.decode()
-                    if data == "Data is received.":
-                        continue
-                    else:
-                        print("Receiving request data.")
-
-                        conn.send("Request is received.".encode())  # 对agent的响应信息
-
-                        request_id = self.after_receive_request(data)
-
-                        resp_condition = Condition()
-                        self.resp_conditions[request_id] = resp_condition
-
-                        print("uuid is:", request_id)
-                        conn.send("Request is in queue.".encode())
-
-                        # print(self.response_data)
-                        # print(self.response_data[request_id].keys())
-                        # while not self.response_data:
-                        #     continue
-                        # while request_id not in self.response_data.keys():
-                        #     continue
-                        # while 'data_ready' not in self.response_data[request_id].keys():
-                        #     continue
-                        # while not self.response_data[request_id]['data_ready']:
-                        #     continue
-                        # time.sleep(10)
-                        # print(self.response_data)
-                        # print(self.response_data[request_id].keys())
-                        # print(self.response_data[request_id]['data'])
-                        # TODO: Debug the Lock Logic
-                        # producer,consumer,another consumer relayed on consumer
-
-                        # 保证这里先运行,挂起等待才行
-
-                        self.resp_conditions[request_id].acquire()
-                        print("echo get response lock for request ", request_id)
-
-                        if request_id not in self.response_data.keys():
-                            print("Waiting for response data ready")
-                            self.resp_conditions[request_id].wait()
-                            print("response data has been ready and notified the response thread.")
-                        elif 'data' not in self.response_data[request_id].keys():
-                            print("Waiting for response data ready")
-                            self.resp_conditions[request_id].wait()
-                            print("response data has been ready and notified the response thread.")
-
-                        if self.response_data[request_id]['data']:
-                            conn.send("Data Ready.".encode())
-                            resp_data = json.dumps(self.response_data[request_id]['data'])
-                            conn.send(resp_data.encode())
-                            print('Has Sent Data Back To Drone.')
-                        else:
-                            conn.send("Put is done.".encode())
-                            print('Has Update Data According To Drone.')
-                        self.response_data[request_id]['data_sent'] = True
-
-                        self.response_data[request_id].clear()
-                        self.response_data.pop(request_id)
-
-                        self.resp_conditions[request_id].release()
-                        self.resp_conditions.pop(request_id)
-
-                except Exception as e:
-                    print("Exception arose when receiving request from agent!")
-                    print(e)
+        print("Connected by address: ", addr)
+        while True:
+            try:
+                data = conn.recv(4096)
+                if not data:
                     break
-            conn.close()
+                # 打印接收到的数据?
+                # conn.sendall(data)
+                print(data.decode())
+                data = data.decode()
+                if data == "Data is received.":
+                    continue
+                else:
+                    print("Receiving request data.")
+
+                    conn.send("Request is received.".encode())  # 对agent的响应信息
+
+                    request_id = self.after_receive_request(data)
+
+                    resp_condition = Condition()
+                    self.resp_conditions[request_id] = resp_condition
+
+                    print("uuid is:", request_id)
+                    conn.send("Request is in queue.".encode())
+
+                    # print(self.response_data)
+                    # print(self.response_data[request_id].keys())
+                    # while not self.response_data:
+                    #     continue
+                    # while request_id not in self.response_data.keys():
+                    #     continue
+                    # while 'data_ready' not in self.response_data[request_id].keys():
+                    #     continue
+                    # while not self.response_data[request_id]['data_ready']:
+                    #     continue
+                    # time.sleep(10)
+                    # print(self.response_data)
+                    # print(self.response_data[request_id].keys())
+                    # print(self.response_data[request_id]['data'])
+                    # TODO: Debug the Lock Logic
+                    # producer,consumer,another consumer relayed on consumer
+
+                    # 保证这里先运行,挂起等待才行
+
+                    self.resp_conditions[request_id].acquire()
+                    print("echo get response lock for request ", request_id)
+
+                    if request_id not in self.response_data.keys():
+                        print("Waiting for response data ready")
+                        self.resp_conditions[request_id].wait()
+                        print("response data has been ready and notified the response thread.")
+                    elif 'data' not in self.response_data[request_id].keys():
+                        print("Waiting for response data ready")
+                        self.resp_conditions[request_id].wait()
+                        print("response data has been ready and notified the response thread.")
+
+                    if self.response_data[request_id]['data']:
+                        conn.send("Data Ready.".encode())
+                        resp_data = json.dumps(self.response_data[request_id]['data'])
+                        conn.send(resp_data.encode())
+                        print('Has Sent Data Back To Drone.')
+                    else:
+                        conn.send("Put is done.".encode())
+                        print('Has Update Data According To Drone.')
+                    self.response_data[request_id]['data_sent'] = True
+
+                    self.response_data[request_id].clear()
+                    self.response_data.pop(request_id)
+
+                    self.resp_conditions[request_id].release()
+                    self.resp_conditions.pop(request_id)
+
+            except Exception as e:
+                print("Exception arose when receiving request from agent!")
+                print(e)
+                break
+        conn.close()
+
     # after_receive_request(多个并行的producer) 与 process_request(一个consumer)应该是两个/多个并行的线程
     # 同时操作request_queue这个资源
     # 应该注意会不会发生读写冲突，必要的话需要加锁
@@ -308,16 +314,16 @@ class Center:
                                         self.query_tool.cur.execute('SELECT * FROM cur_processes')
                                         print(self.query_tool.cur.fetchall())
                                         self.query_tool.cur.execute('UPDATE drone_local_nodes '
-                                            'SET visit_count={},visited={},victims_num={},need_rescue={},node_type={} '
-                                            'WHERE node_id = {} AND uav_id = {}'
-                                            .format(new_row['VC'],
-                                                    new_row['V'],
-                                                    new_row['VN'],
-                                                    new_row['NR'],
-                                                    new_row['NT'],
-                                                    new_row['NID'],
-                                                    new_row['UID']
-                                                    ))
+                                                                    'SET visit_count={},visited={},victims_num={},need_rescue={},node_type={} '
+                                                                    'WHERE node_id = {} AND uav_id = {}'
+                                                                    .format(new_row['VC'],
+                                                                            new_row['V'],
+                                                                            new_row['VN'],
+                                                                            new_row['NR'],
+                                                                            new_row['NT'],
+                                                                            new_row['NID'],
+                                                                            new_row['UID']
+                                                                            ))
                                         print(self.query_tool.cur.query)
                                         print(self.query_tool.cur.statusmessage)
                                         self.query_tool.cur.execute('SELECT * FROM drone_local_nodes')
@@ -333,7 +339,13 @@ class Center:
                                                                             new_row['EID']))
                                 elif vi == 2:
                                     # drone_self_info
+                                    print("I am here!")
+                                    print(self.request_queue[i]['view_data_list'])
+                                    print(isinstance(self.request_queue[i]['view_data_list'], list))
                                     for new_row in self.request_queue[i]['view_data_list'][j]:
+                                        print("view 2 new data")
+                                        print(new_row)
+                                        print(isinstance(new_row, dict))
                                         self.query_tool.cur.execute("UPDATE public.drone_self_info "
                                                                     "SET loc_node_id={},view_range={},"
                                                                     "load_num={},cur_electricity={},"
@@ -502,6 +514,105 @@ class Center:
 
             self.response_data[uuid]['data'] = data
 
+    def check_state(self):
+
+        time.sleep(5)
+
+        while self._running:
+
+            # drawing current state of all drones and global view map
+
+            # check search_coverage task state
+            # and update the search_coverage_task, search_coverage_history_state tables
+            self.query_tool.cur.execute("SELECT area_id,responsible_fleet_id "
+                                        "FROM public.search_coverage_task "
+                                        "WHERE start_time IS NOT NULL")
+            rows = self.query_tool.cur.fetchall()
+            for row in rows:
+                aid = row[0]
+                fid = row[1]
+                self.query_tool.cur.execute("SELECT AVG(cur_path_length) AS avg_step "
+                                            "FROM public.drones_cur_state, public.drones_config "
+                                            "WHERE drones_config.uav_id=drones_cur_state.uav_id AND fleet_id={}".format(
+                    fid))
+                move_step = self.query_tool.cur.fetchall()[0][0]
+                self.query_tool.cur.execute("SELECT COUNT(node_id) FROM public.grid_nodes "
+                                            "WHERE node_type=0 AND visited=FALSE ")
+                unvisited_num = self.query_tool.cur.fetchall()[0][0]
+                self.query_tool.cur.execute("SELECT COUNT(node_id) FROM public.grid_nodes "
+                                            "WHERE node_type=1 or node_type=2")
+                other_num = self.query_tool.cur.fetchall()[0][0]
+                self.query_tool.cur.execute("SELECT COUNT(node_id) FROM public.grid_nodes")
+                total_num = self.query_tool.cur.fetchall()[0][0]
+                coverage_ratio = 1 - float(unvisited_num) / float(total_num - other_num)
+                self.query_tool.cur.execute("SELECT COUNT(public.drones_cur_state.uav_id) "
+                                            "FROM public.drones_cur_state, public.drones_config "
+                                            "WHERE drones_config.uav_id = drones_cur_state.uav_id "
+                                            "AND flying_state=1 AND fleet_id={} ".format(fid))
+                on_working_num = self.query_tool.cur.fetchall()[0][0]
+                self.query_tool.cur.execute("SELECT COUNT(public.drones_cur_state.uav_id) "
+                                            "FROM public.drones_cur_state, public.drones_config "
+                                            "WHERE drones_config.uav_id = drones_cur_state.uav_id "
+                                            "AND fleet_id={} ".format(fid))
+                total_num = self.query_tool.cur.fetchall()[0][0]
+                self.query_tool.cur.execute("SELECT COUNT(public.drones_cur_state.uav_id) "
+                                            "FROM public.drones_cur_state, public.drones_config "
+                                            "WHERE drones_config.uav_id = drones_cur_state.uav_id "
+                                            "AND flying_state=5 AND fleet_id={} ".format(fid))
+                done_working_num = self.query_tool.cur.fetchall()[0][0]
+                working_uav_ratio = float(on_working_num) / float(total_num)
+                cur_t = time.time()
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cur_t))
+                cur_working_time = cur_t - self.start_time
+                iscompleted = not bool(unvisited_num)
+
+                if iscompleted:
+                    self.query_tool.cur.execute("UPDATE public.drones_cur_state "
+                                                "SET flying_state=5 "
+                                                "WHERE uav_id in "
+                                                "(SELECT public.drones_cur_state.uav_id "
+                                                "FROM public.drones_cur_state, public.drones_config "
+                                                "WHERE drones_cur_state.uav_id = drones_config.uav_id AND fleet_id = {})".format(fid))
+
+                iscompleted = iscompleted or (done_working_num == total_num)
+                self.query_tool.cur.execute("INSERT INTO public.search_coverage_history_states "
+                                            "VALUES ({},'{}',{},{},{},'{}s',{})".format(aid, timestamp, move_step,
+                                                                                        coverage_ratio,
+                                                                                        working_uav_ratio,
+                                                                                        cur_working_time, iscompleted))
+                if iscompleted:
+                    self.query_tool.cur.execute(
+                        "UPDATE public.search_coverage_task "
+                        "SET end_coverage_ratio={},end_time={} "
+                        "WHERE area_id={} and responsible_fleet_id={}".format(
+                            coverage_ratio, timestamp, aid, fid))
+            # check rescue_support task state
+            # and update the rescue_support_task, rescue_support_task_targets, rescue_support_cur_state tables
+            # TODO: realizing the check process for rescue_support_task
+            # 检查当前正在进行的rescue_support任务的area
+
+            # 对每一个有任务的area,检查area区域内符合条件的任务点,新的任务点插入rescue_support_task_targets,
+            # 以及rescue_support_cur_state,并更新rescue_support_task的target_num
+
+            # 如果可以的话，对于rescue_support_cur_state中未分配给无人机的任务点进行任务分配
+
+            # 统计rescue_support_cur_state中已分配出去的target的完成情况,如果is_completed=True,则更新相应target在
+            # rescue_support_task_targets表中的over_time.
+
+            # 如果同area下任务0已结束,则任务1的任务数不会再增长,这种情况下如果所有的target都有overtime了,
+            # 更新rescue_support_task的end_time以及end_completed_ratio
+
+            # 如果负责任务1的所有飞机都处于5状态,则更新rescue_support_task的end_time以及end_completed_ratio
+
+            # self.query_tool.cur.execute("SELECT area_id,responsible_fleet_id "
+            #                             "FROM public.rescue_support_task "
+            #                             "WHERE start_time IS NOT NULL")
+            # rows = self.query_tool.cur.fetchall()
+
+            time.sleep(self.experiment_config.center_check_interval)
+
+
+
     # # 如center与agent处于平等交互地位，即center不仅仅是被动接收agent的请求，同时可以主动建立请求，则需要再建立相应的新的连接
     # def create_request_connection(self):
     #
@@ -510,19 +621,42 @@ class Center:
 
 if __name__ == "__main__":
     center = Center()
+    with open(file='../data/metadata.json', mode='r') as fr:
+        metadata = json.loads("".join(fr.readlines()))['metadata']
+        dg = GlobalDataInitializer(agent_num=metadata['agent_num'],
+                                   map_width=metadata['width'],
+                                   map_height=metadata['height'],
+                                   charge_num=metadata['charge_num'],
+                                   charge_pos_list=metadata['charge_pos_list'],
+                                   obstacle_num=metadata['obstacle_num'],
+                                   db_used=True
+                                   )
+        dg.initNewMapViews()
+        dg.initNewAgentViews()
+        dg.ClearDBInitializer()
 
     process_thread = Thread(target=center.process_request_in_queue)
     process_thread.start()  # process thread
 
+    check_thread = Thread(target=center.check_state)
+    check_thread.start()
+
     center.create_request_listener()  # create socket listener thread
     center.connect_with_agents()
+
+    time.sleep(10)  # waiting for ending listening
+    check_thread.join()
+    process_thread.join()  # waiting for ending processing
+
     # response_thread = Thread(target=center.connect_with_agents)
     # 如果该语句直接写在main thread中, 不用单独线程控制的话将是一个无限循环
     # 不能执行下面的center.terminate()主动终止进程
     # response_thread.start()
-    center._running = False
-    process_thread.join()
-    time.sleep(60)
+
+    # center._running = False
+    # process_thread.join()
+    # time.sleep(60)
+
     # accept会阻塞进程，等待accept队列中有元素,也就是维持在connect listen状态下等待新的连接
     # 即response_thread被accept阻塞了,这时候调用terminal并不会影响其进入循环(因为循环已经被阻塞了)
     # 而由于center中直接释放了socket,所以会报错.
