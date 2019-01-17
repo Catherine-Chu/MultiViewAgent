@@ -11,11 +11,14 @@ import time
 import uuid
 from socket import *
 import threading
-from threading import *
+from threading import Thread
+from threading import Condition
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue, PriorityQueue
 import heapq
+import tkinter as tk
 import json
+import math
 
 
 class Center:
@@ -84,7 +87,10 @@ class Center:
             # 使用线程池的好处是可以限制线程池大小，避免建立无限多的连接
             # 线程池中进程默认为后台线程，建立后无法通过其他手段干预或强制停止（是说无法在代码中操作）？
             self.con_thread_pool.submit(self.echo_agent, conn, addr)
-            time_elapse = time.time() - self.start_time
+            if self.start_time is not None:
+                time_elapse = time.time() - self.start_time
+            else:
+                time_elapse = 0
             if time_elapse > self.experiment_config.timeout:
                 self.terminate()
 
@@ -309,10 +315,10 @@ class Center:
                                     # drone_local_nodes
                                     for new_row in self.request_queue[i]['view_data_list'][j]:
                                         print('new_row: ', new_row)
-                                        self.query_tool.cur.execute('SELECT * FROM drone_local_nodes')
-                                        print(self.query_tool.cur.fetchall())
-                                        self.query_tool.cur.execute('SELECT * FROM cur_processes')
-                                        print(self.query_tool.cur.fetchall())
+                                        # self.query_tool.cur.execute('SELECT * FROM drone_local_nodes')
+                                        # print(self.query_tool.cur.fetchall())
+                                        # self.query_tool.cur.execute('SELECT * FROM cur_processes')
+                                        # print(self.query_tool.cur.fetchall())
                                         self.query_tool.cur.execute('UPDATE drone_local_nodes '
                                                                     'SET visit_count={},visited={},victims_num={},need_rescue={},node_type={} '
                                                                     'WHERE node_id = {} AND uav_id = {}'
@@ -324,12 +330,12 @@ class Center:
                                                                             new_row['NID'],
                                                                             new_row['UID']
                                                                             ))
-                                        print(self.query_tool.cur.query)
-                                        print(self.query_tool.cur.statusmessage)
-                                        self.query_tool.cur.execute('SELECT * FROM drone_local_nodes')
-                                        print(self.query_tool.cur.fetchall())
-                                        self.query_tool.cur.execute('SELECT * FROM grid_nodes')
-                                        print(self.query_tool.cur.fetchall())
+                                        # print(self.query_tool.cur.query)
+                                        # print(self.query_tool.cur.statusmessage)
+                                        # self.query_tool.cur.execute('SELECT * FROM drone_local_nodes')
+                                        # print(self.query_tool.cur.fetchall())
+                                        # self.query_tool.cur.execute('SELECT * FROM grid_nodes')
+                                        # print(self.query_tool.cur.fetchall())
                                 elif vi == 1:
                                     # drone_local_edges
                                     for new_row in self.request_queue[i]['view_data_list'][j]:
@@ -339,13 +345,13 @@ class Center:
                                                                             new_row['EID']))
                                 elif vi == 2:
                                     # drone_self_info
-                                    print("I am here!")
-                                    print(self.request_queue[i]['view_data_list'])
-                                    print(isinstance(self.request_queue[i]['view_data_list'], list))
+                                    # print("I am here!")
+                                    # print(self.request_queue[i]['view_data_list'])
+                                    # print(isinstance(self.request_queue[i]['view_data_list'], list))
                                     for new_row in self.request_queue[i]['view_data_list'][j]:
-                                        print("view 2 new data")
-                                        print(new_row)
-                                        print(isinstance(new_row, dict))
+                                        # print("view 2 new data")
+                                        # print(new_row)
+                                        # print(isinstance(new_row, dict))
                                         self.query_tool.cur.execute("UPDATE public.drone_self_info "
                                                                     "SET loc_node_id={},view_range={},"
                                                                     "load_num={},cur_electricity={},"
@@ -418,7 +424,8 @@ class Center:
             #     self.condition.wait()
             #     print("Producer added something to queue and notified the consumer.")
 
-            time.sleep(3)
+            # TODO
+            time.sleep(1)
 
             for (i_, uuid_) in index_:
                 # self.response_data[uuid_].clear()
@@ -515,8 +522,7 @@ class Center:
             self.response_data[uuid]['data'] = data
 
     def check_state(self):
-
-        time.sleep(5)
+        time.sleep(self.experiment_config.center_check_interval)
 
         while self._running:
 
@@ -572,7 +578,8 @@ class Center:
                                                 "WHERE uav_id in "
                                                 "(SELECT public.drones_cur_state.uav_id "
                                                 "FROM public.drones_cur_state, public.drones_config "
-                                                "WHERE drones_cur_state.uav_id = drones_config.uav_id AND fleet_id = {})".format(fid))
+                                                "WHERE drones_cur_state.uav_id = drones_config.uav_id AND fleet_id = {})".format(
+                        fid))
 
                 iscompleted = iscompleted or (done_working_num == total_num)
                 self.query_tool.cur.execute("INSERT INTO public.search_coverage_history_states "
@@ -611,12 +618,276 @@ class Center:
 
             time.sleep(self.experiment_config.center_check_interval)
 
-
-
     # # 如center与agent处于平等交互地位，即center不仅仅是被动接收agent的请求，同时可以主动建立请求，则需要再建立相应的新的连接
     # def create_request_connection(self):
     #
     # def before_send_request(self):
+
+    def socket_communication(self):
+        self.create_request_listener()  # create socket listener thread
+        self.connect_with_agents()
+
+
+class Ggrid(tk.Tk, object):
+
+    def __init__(self, grids, agents_info):
+        super(Ggrid, self).__init__()
+        self.staticInfo = StaticInfo()
+        self.action_space = [(0, 1, 1), (0, -1, 1), (-1, 0, 1), (1, 0, 1), (0, 0, 1), (0, 0, 0)]
+        self.n_actions = len(self.action_space)
+        self.title('Global Environment Model')
+        self.grids = grids
+        self.map_w = grids['width']
+        self.map_h = grids['height']
+        self.agents_loc = agents_info[0]
+        self.agents_e = agents_info[1]
+        self.geometry('{0}x{1}'.format(self.map_w * self.staticInfo.UNIT, self.map_h * self.staticInfo.UNIT))
+        self._build_ggrid()
+
+    def _build_ggrid(self):
+        self.canvas = tk.Canvas(self, bg='white',
+                                height=self.map_h * self.staticInfo.UNIT,
+                                width=self.map_w * self.staticInfo.UNIT)
+        # create grids
+        # for c in range(0, self.map_w * self.staticInfo.UNIT, self.staticInfo.UNIT):
+        #     x0, y0, x1, y1 = c, 0, c, self.map_h * self.staticInfo.UNIT
+        #     self.canvas.create_line(x0, y0, x1, y1)
+        # for r in range(0, self.map_h * self.staticInfo.UNIT, self.staticInfo.UNIT):
+        #     x0, y0, x1, y1 = 0, r, self.map_w * self.staticInfo.UNIT, r
+        #     self.canvas.create_line(x0, y0, x1, y1)
+
+        self.grid_block = []
+        self.grid_mark = []
+        for x in range(0, self.map_w * self.staticInfo.UNIT, self.staticInfo.UNIT):
+            self.grid_block.append([])
+            self.grid_mark.append([])
+            for y in range(self.map_h * self.staticInfo.UNIT, 0, -self.staticInfo.UNIT):
+                colorval = "#%02x%02x%02x" % (34, 139, 34)
+                block = self.canvas.create_rectangle((x, y, x + self.staticInfo.UNIT, y - self.staticInfo.UNIT),
+                                                     fill=colorval, outline='gray', disabledfill='gray')
+                self.grid_block[len(self.grid_block) - 1].append(block)
+                if self.grids['nodes'][len(self.grid_block)-1][len(self.grid_block[len(self.grid_block) - 1])-1].visited:
+                    mark_fill = 'red'
+                else:
+                    mark_fill = colorval
+                mark = self.canvas.create_oval((x + self.staticInfo.UNIT / 2 - self.staticInfo.UNIT / 32,
+                                                y - self.staticInfo.UNIT / 2 - self.staticInfo.UNIT / 32,
+                                                x + self.staticInfo.UNIT / 2 + self.staticInfo.UNIT / 32,
+                                                y - self.staticInfo.UNIT / 2 + self.staticInfo.UNIT / 32),
+                                               fill=mark_fill, outline=colorval, disabledfill=colorval,
+                                               disabledoutline=colorval)
+                self.grid_mark[len(self.grid_mark) - 1].append(mark)
+
+        # create origin(原点)
+        origin = np.array([self.staticInfo.UNIT / 2, self.staticInfo.UNIT * self.map_h - self.staticInfo.UNIT / 2])
+
+        # create ordinary nodes, obstacle and charging station in env
+        self.stats = {}
+        self.vbs = {}
+        for i in range(self.map_w):
+            for j in range(self.map_h):
+                if self.grids['nodes'][i][j].is_charge_p:
+                    # charging station
+                    stat_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * (-j)])
+                    p1 = stat_center + np.array([0, -self.staticInfo.UNIT / 4])
+                    p2 = stat_center + np.array([-self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
+                    p3 = stat_center + np.array([self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
+                    stat = self.canvas.create_polygon(
+                        (p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]),
+                        fill='blue', disabledfill='gray')
+                    self.stats[(i, j)]= stat
+                elif self.grids['nodes'][i][j].blocked:
+                    # obstacle
+                    self.canvas.itemconfig(self.grid_block[i][j], fill='black')
+                else:
+                    # ordinary node
+                    n_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * (-j)])
+                    p1 = n_center + np.array([-self.staticInfo.UNIT / 2, self.staticInfo.UNIT / 2])
+                    p2 = n_center + np.array([-self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
+                    if self.grids['nodes'][i][j].need_rescue:
+                        fill = 'red'
+                    else:
+                        fill = 'black'
+                    block = self.canvas.create_rectangle((p1[0], p1[1], p2[0], p2[1]), fill='white',
+                                                         disabledfill='gray', disabledoutline='gray')
+                    text = self.canvas.create_text((p1[0] + self.staticInfo.UNIT / 8, p1[1] - self.staticInfo.UNIT / 8),
+                                                   text='{}'.format(self.grids['nodes'][i][j].victims_num),
+                                                   fill=fill, disabledfill='gray')
+                    self.vbs[(i, j)]= {'block': block, 'num': text}
+
+        self.agents = []
+        # create agents
+        for i in range(len(self.agents_loc)):
+            agent_center = origin + np.array([self.staticInfo.UNIT * self.agents_loc[i][0],
+                                              -self.staticInfo.UNIT * self.agents_loc[i][1]])
+            agent = self.canvas.create_oval(
+                (agent_center[0] - self.staticInfo.UNIT / 4, agent_center[1] - self.staticInfo.UNIT / 4,
+                 agent_center[0] + self.staticInfo.UNIT / 4, agent_center[1] + self.staticInfo.UNIT / 4),
+                fill='white'
+            )
+
+            fill = ''
+            if self.agents_e[i] == 0:
+                fill = 'green'
+            elif self.agents_e[i] == 1:
+                fill = 'yellow'
+            else:
+                fill = 'red'
+            light = self.canvas.create_rectangle(
+                (agent_center[0] - self.staticInfo.UNIT / 8, agent_center[1] + self.staticInfo.UNIT / 8,
+                 agent_center[0] + self.staticInfo.UNIT / 8, agent_center[1] - self.staticInfo.UNIT / 8),
+                fill=fill
+            )
+            self.agents.append({'circle': agent, 'light': light})
+
+        # pack all
+        self.canvas.pack()
+
+    def step(self, new_grids, new_locs, new_e):
+        origin = np.array([self.staticInfo.UNIT / 2, self.staticInfo.UNIT * self.map_h - self.staticInfo.UNIT / 2])
+        # Update grids
+        for i in range(self.map_w):
+            for j in range(self.map_h):
+                if new_grids['nodes'][i][j].is_charge_p:
+                    # TODO: update charging station, we assume that there are no change of charging station now
+                    if not ((i,j) in self.stats):
+                        stat_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * (-j)])
+                        p1 = stat_center + np.array([0, -self.staticInfo.UNIT / 4])
+                        p2 = stat_center + np.array([-self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
+                        p3 = stat_center + np.array([self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
+                        new_stat = self.canvas.create_polygon(
+                            (p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]),
+                            fill='blue', disabledfill='gray')
+                        self.stats[(i, j)] = new_stat
+                        if (i,j) in self.vbs:
+                            self.canvas.delete(self.vbs[(i,j)]['block'])
+                            self.canvas.delete(self.vbs[(i,j)]['num'])
+                elif new_grids['nodes'][i][j].blocked:
+                    # obstacle
+                    self.canvas.itemconfig(self.grid_block[i][j], fill='black')
+                    self.canvas.itemconfig(self.grid_mark[i][j], fill='black', outline='black')
+                    if (i,j) in self.vbs:
+                        self.canvas.delete(self.vbs[(i, j)]['block'])
+                        self.canvas.delete(self.vbs[(i, j)]['num'])
+                    if (i,j) in self.stats:
+                        self.canvas.delete(self.stats[(i,j)])
+                else:
+                    # ordinary node
+                    colorval = "#%02x%02x%02x" % (34, 139, 34)
+                    self.canvas.itemconfig(self.grid_block[i][j], fill=colorval)
+                    if new_grids['nodes'][i][j].visited:
+                        self.canvas.itemconfig(self.grid_mark[i][j],fill='red')
+                    if (i,j) in self.vbs:
+                        if new_grids['nodes'][i][j].need_rescue:
+                            fill = 'red'
+                        else:
+                            fill = 'black'
+                        self.canvas.itemconfig(self.vbs[(i,j)]['num'],text='{}'.format(new_grids['nodes'][i][j].victims_num),
+                                               fill=fill)
+                    else:
+                        n_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * (-j)])
+                        p1 = n_center + np.array([-self.staticInfo.UNIT / 2, self.staticInfo.UNIT / 2])
+                        p2 = n_center + np.array([-self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
+                        if self.grids['nodes'][i][j].need_rescue:
+                            fill = 'red'
+                        else:
+                            fill = 'black'
+                        block = self.canvas.create_rectangle((p1[0], p1[1], p2[0], p2[1]), fill='white',
+                                                             disabledfill='gray', disabledoutline='gray')
+                        text = self.canvas.create_text((p1[0] + self.staticInfo.UNIT / 8, p1[1] - self.staticInfo.UNIT / 8),
+                                                       text='{}'.format(self.grids['nodes'][i][j].victims_num),
+                                                       fill=fill, disabledfill='gray')
+                        self.vbs.append({'pos': (i, j), 'block': block, 'num': text})
+
+        s = []
+        s_ = []
+        for i, ag in enumerate(self.agents):
+            x0, y0, x1, y1 = self.canvas.bbox(ag['circle'])
+            coor = [(x0 + x1) / 2, (y0 + y1) / 2]
+            s.append([math.floor(int(coor[0]) / int(self.staticInfo.UNIT)),
+                      math.floor((self.map_h * self.staticInfo.UNIT - int(coor[1])) / self.staticInfo.UNIT)])
+            self.canvas.itemconfig(self.grid_mark[s[i][0]][s[i][1]], state='normal')
+            base_action = np.array([(new_locs[i][0] - s[i][0]) * self.staticInfo.UNIT,
+                                    -(new_locs[i][1] - s[i][1]) * self.staticInfo.UNIT])
+            self.canvas.move(ag['circle'], base_action[0], base_action[1])  # move agent circle
+            self.canvas.move(ag['light'], base_action[0], base_action[1])
+            if new_e[i] == 0:
+                fill = 'green'
+            elif new_e[i] == 1:
+                fill = 'yellow'
+            else:
+                fill = 'red'
+            self.canvas.itemconfig(ag['light'], fill=fill)
+            s_.append([new_locs[i][0], new_locs[i][1]])
+        return s_
+
+
+def get_current_data(qt, width, height, W_, C_):
+    qt.cur.execute("SELECT * FROM public.nodes_config ORDER BY node_id ASC")
+    loc_rows = qt.cur.fetchall()
+    loc_col_names = [desc[0] for desc in qt.cur.description]
+    qt.cur.execute("SELECT * FROM public.grid_nodes ORDER BY node_id ASC")
+    info_rows = qt.cur.fetchall()
+    info_col_names = [desc[0] for desc in qt.cur.description]
+    grids = {}
+    grids['width'] = width
+    grids['height'] = height
+    grids['nodes'] = []
+    for i in range(width):
+        grids['nodes'].append([])
+        for j in range(height):
+            grids['nodes'][i].append(j)
+    for i in range(len(loc_rows)):
+        x = int(loc_rows[i][loc_col_names.index('pos_x')])
+        y = int(loc_rows[i][loc_col_names.index('pos_y')])
+        id = int(loc_rows[i][loc_col_names.index('node_id')])
+        node_type = int(info_rows[id][info_col_names.index('node_type')])
+        visited = bool(info_rows[id][info_col_names.index('visited')])
+        victims_num = int(info_rows[id][info_col_names.index('victims_num')])
+        need_rescue = bool(info_rows[id][info_col_names.index('need_rescue')])
+        grids['nodes'][x][y] = Point(nid=id, pos_x=x, pos_y=y, node_type=node_type, victims_num=victims_num,
+                            need_rescue=need_rescue, visited=visited)
+
+    qt.cur.execute("SELECT * FROM public.drones_cur_state ORDER BY uav_id ASC")
+    drone_infos = qt.cur.fetchall()
+    drone_col_names = [desc[0] for desc in qt.cur.description]
+    cur_pos = []
+    cur_e = []
+    for info in drone_infos:
+        uid = int(info[drone_col_names.index('uav_id')])
+        nid = int(info[drone_col_names.index('loc_node_id')])
+        x = int(loc_rows[nid][loc_col_names.index('pos_x')])
+        y = int(loc_rows[nid][loc_col_names.index('pos_y')])
+        cur_pos.append([x, y])
+        e = float(info[drone_col_names.index('cur_electricity')])
+        qt.cur.execute("SELECT max_electricity FROM public.drones_config WHERE uav_id={}".format(uid))
+        max_e = float(qt.cur.fetchall()[0][0])
+        if e >= max_e * (1 - W_):
+            new_e = 0
+        elif max_e * (1 - C_) <= e < max_e * (1 - W_):
+            new_e = 1
+        else:
+            new_e = 2
+        cur_e.append(new_e)
+    return grids, cur_pos, cur_e
+
+
+def render_global_views(width, height, W_, C_, timeout):
+    qt = QueryTool(database='multiAgents')
+    start_time = time.time()
+    grids, cur_pos, cur_e = get_current_data(qt,width,height, W_, C_)
+    view_window = Ggrid(grids=grids, agents_info=(cur_pos, cur_e))
+
+    while True:
+        time.sleep(0.1)
+        new_grids, cur_pos, cur_e = get_current_data(qt,width,height,W_, C_)
+        s_ = view_window.step(new_grids, cur_pos, cur_e)
+        view_window.update_idletasks()
+        view_window.update()
+        time_elapse = time.time() - start_time
+        if time_elapse > timeout:
+            qt.clear_db_connection()
+            break
 
 
 if __name__ == "__main__":
@@ -639,12 +910,18 @@ if __name__ == "__main__":
     process_thread.start()  # process thread
 
     check_thread = Thread(target=center.check_state)
-    check_thread.start()
+    check_thread.start()  # check thread
 
-    center.create_request_listener()  # create socket listener thread
-    center.connect_with_agents()
+    socket_thread = Thread(target=center.socket_communication)
+    socket_thread.start()  # socket thread
+
+    W_ = center.experiment_config.W_Threshold
+    C_ = center.experiment_config.C_Threshold
+    timeout = center.experiment_config.timeout
+    render_global_views(metadata['width'], metadata['height'], W_, C_, timeout)
 
     time.sleep(10)  # waiting for ending listening
+    socket_thread.join()
     check_thread.join()
     process_thread.join()  # waiting for ending processing
 

@@ -444,7 +444,8 @@ class UAV:
             else:
                 self.cur_State = 5
                 self._running = False
-            time.sleep(2)
+            # TODO
+            #  time.sleep(2)
         # 主进程要求终止后，需要处理的收尾工作
         if self.cur_State == 5:
             sense_time = time.time()
@@ -495,16 +496,20 @@ class UAV:
 
         def get_local_info(g_env):
             local_nodes = {}
+            within_list = []
             for key, node in self.Local_View_Map.Nodes.items():
-                env_node = g_env.Nodes[node.pos_x][node.pos_y]
-                if not isinstance(env_node, ChargingPoint):
-                    if not env_node == node:
-                        local_nodes[key] = env_node
+                if math.pow(node.pos_x - self.cur_PX,2) + math.pow(node.pos_y-self.cur_PY,2) <= math.pow(self.SR,2):
+                    env_node = g_env.Nodes[node.pos_x][node.pos_y]
+                    within_list.append(node.NID)
+                    if not isinstance(env_node, ChargingPoint):
+                        if not env_node == node:
+                            local_nodes[key] = env_node
             local_edges = {}
             for key, edge in self.Local_View_Map.Edges.items():
-                env_edge = g_env.Edges[edge.EID]
-                if not env_edge == edge:
-                    local_edges[key] = env_edge
+                if edge.from_p in within_list and edge.to_p in within_list:
+                    env_edge = g_env.Edges[edge.EID]
+                    if not env_edge == edge:
+                        local_edges[key] = env_edge
             local_ = (local_nodes, local_edges)
             return local_
 
@@ -911,15 +916,24 @@ class Cgrid(tk.Tk, object):
         #     self.canvas.create_line(x0, y0, x1, y1)
 
         self.grid_block = []
+        self.grid_mark = []
         for x in range(0, self.map_w * self.staticInfo.UNIT, self.staticInfo.UNIT):
             self.grid_block.append([])
-            for y in range(0, self.map_h * self.staticInfo.UNIT, self.staticInfo.UNIT):
-                block = self.canvas.create_rectangle((x, y, x + self.staticInfo.UNIT, y + self.staticInfo.UNIT),
-                                                     fill='white', disabledfill='black')
+            self.grid_mark.append([])
+            for y in range(self.map_h * self.staticInfo.UNIT, 0,  -self.staticInfo.UNIT):
+                colorval = "#%02x%02x%02x" % (34,139,34)
+                block = self.canvas.create_rectangle((x, y, x + self.staticInfo.UNIT, y - self.staticInfo.UNIT),
+                                                     fill=colorval, outline='gray', disabledfill='gray')
                 self.grid_block[len(self.grid_block) - 1].append(block)
+                mark = self.canvas.create_oval((x+self.staticInfo.UNIT/2-self.staticInfo.UNIT/32,
+                                                      y-self.staticInfo.UNIT/2-self.staticInfo.UNIT/32,
+                                                      x + self.staticInfo.UNIT / 2 + self.staticInfo.UNIT / 32,
+                                                      y - self.staticInfo.UNIT / 2 + self.staticInfo.UNIT / 32),
+                                                      fill=colorval, outline=colorval, disabledfill='gray', disabledoutline = 'gray')
+                self.grid_mark[len(self.grid_mark) - 1].append(mark)
 
         # create origin(原点)
-        origin = np.array([self.staticInfo.UNIT / 2, self.staticInfo.UNIT / 2])
+        origin = np.array([self.staticInfo.UNIT / 2, self.staticInfo.UNIT * self.map_h-self.staticInfo.UNIT / 2])
 
         # create ordinary nodes, obstacle and charging station in env
         self.stats = []
@@ -929,50 +943,51 @@ class Cgrid(tk.Tk, object):
             for j in range(self.map_h):
                 if isinstance(self.env.Nodes[i][j], ChargingPoint):
                     # charging station
-                    stat_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * j])
-                    p1 = stat_center + np.array([0, self.staticInfo.UNIT / 4])
-                    p2 = stat_center + np.array([-self.staticInfo.UNIT / 4, -self.staticInfo.UNIT / 4])
-                    p3 = stat_center + np.array([self.staticInfo.UNIT / 4, -self.staticInfo.UNIT / 4])
+                    stat_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * (-j)])
+                    p1 = stat_center + np.array([0, -self.staticInfo.UNIT / 4])
+                    p2 = stat_center + np.array([-self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
+                    p3 = stat_center + np.array([self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
                     stat = self.canvas.create_polygon(
                         (p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]),
-                        fill='green', disabledfill='black')
+                        fill='blue', disabledfill='gray')
                     self.stats.append({'pos': (i, j), 'stat': stat})
                 elif self.env.Nodes[i][j].blocked:
                     # obstacle
-                    ob_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * j])
-                    p1 = ob_center + np.array([self.staticInfo.UNIT / 2, self.staticInfo.UNIT / 2])
-                    p2 = ob_center + np.array([self.staticInfo.UNIT / 2, -self.staticInfo.UNIT / 2])
-                    p3 = ob_center + np.array([-self.staticInfo.UNIT / 2, self.staticInfo.UNIT / 2])
-                    p4 = ob_center + np.array([-self.staticInfo.UNIT / 2, -self.staticInfo.UNIT / 2])
-                    self.canvas.itemconfig(self.grid_block[i][j], fill='brown')
-                    line1 = self.canvas.create_line((p1[0], p1[1], p4[0], p4[1]), fill='red', disabledfill='black')
-                    line2 = self.canvas.create_line((p2[0], p2[1], p3[0], p3[1]), fill='red', disabledfill='black')
-                    self.obs.append({'pos': (i, j), 'l1': line1, 'l2': line2})
+                    ob_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * (-j)])
+                    # p1 = ob_center + np.array([self.staticInfo.UNIT / 2, self.staticInfo.UNIT / 2])
+                    # p2 = ob_center + np.array([self.staticInfo.UNIT / 2, -self.staticInfo.UNIT / 2])
+                    # p3 = ob_center + np.array([-self.staticInfo.UNIT / 2, self.staticInfo.UNIT / 2])
+                    # p4 = ob_center + np.array([-self.staticInfo.UNIT / 2, -self.staticInfo.UNIT / 2])
+                    self.canvas.itemconfig(self.grid_block[i][j], fill='black')
+                    self.canvas.itemconfig(self.grid_mark[i][j], fill='black', outline='black')
+                    # line1 = self.canvas.create_line((p1[0], p1[1], p4[0], p4[1]), fill='red', disabledfill='black')
+                    # line2 = self.canvas.create_line((p2[0], p2[1], p3[0], p3[1]), fill='red', disabledfill='black')
+                    # self.obs.append({'pos': (i, j), 'l1': line1, 'l2': line2})
                 else:
                     # ordinary node
-                    n_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * j])
-                    p1 = n_center + np.array([-self.staticInfo.UNIT / 2, -self.staticInfo.UNIT / 2])
-                    p2 = n_center + np.array([-self.staticInfo.UNIT / 4, -self.staticInfo.UNIT / 4])
+                    n_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * (-j)])
+                    p1 = n_center + np.array([-self.staticInfo.UNIT / 2, self.staticInfo.UNIT / 2])
+                    p2 = n_center + np.array([-self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
                     if self.env.Nodes[i][j].need_rescue:
-                        fill = 'purple'
+                        fill = 'red'
                     else:
-                        fill = 'blue'
-                    block = self.canvas.create_rectangle((p1[0], p1[1], p2[0], p2[1]), fill=fill, outline='black',
-                                                         disabledfill='black')
-                    text = self.canvas.create_text((p1[0], p1[1]),
+                        fill = 'black'
+                    block = self.canvas.create_rectangle((p1[0], p1[1], p2[0], p2[1]), fill='white',
+                                                         disabledfill='gray', disabledoutline='gray')
+                    text = self.canvas.create_text((p1[0]+self.staticInfo.UNIT / 8, p1[1]-self.staticInfo.UNIT / 8),
                                                    text='{}'.format(self.env.Nodes[i][j].victims_num),
-                                                   anchor='sw', fill='white', disabledfill='white')
+                                                   fill=fill, disabledfill='gray')
                     self.vbs.append({'pos': (i, j), 'block': block, 'num': text})
         self.agents = []
 
         # create agents
         for i in range(len(self.agents_loc)):
             agent_center = origin + np.array([self.staticInfo.UNIT * self.agents_loc[i][0],
-                                             self.staticInfo.UNIT * self.agents_loc[i][1]])
+                                             -self.staticInfo.UNIT * self.agents_loc[i][1]])
             agent = self.canvas.create_oval(
-                (agent_center[0] - self.staticInfo.UNIT / 4, agent_center[1] + self.staticInfo.UNIT / 4,
-                 agent_center[0] + self.staticInfo.UNIT / 4, agent_center[1] - self.staticInfo.UNIT / 4),
-                fill='gray'
+                (agent_center[0] - self.staticInfo.UNIT / 4, agent_center[1] - self.staticInfo.UNIT / 4,
+                 agent_center[0] + self.staticInfo.UNIT / 4, agent_center[1] + self.staticInfo.UNIT / 4),
+                fill='white'
             )
 
             fill = ''
@@ -983,8 +998,8 @@ class Cgrid(tk.Tk, object):
             else:
                 fill = 'red'
             light = self.canvas.create_rectangle(
-                (agent_center[0] - self.staticInfo.UNIT / 8, agent_center[1] - self.staticInfo.UNIT / 8,
-                 agent_center[0] + self.staticInfo.UNIT / 8, agent_center[1] + self.staticInfo.UNIT / 8),
+                (agent_center[0] - self.staticInfo.UNIT / 8, agent_center[1] + self.staticInfo.UNIT / 8,
+                 agent_center[0] + self.staticInfo.UNIT / 8, agent_center[1] - self.staticInfo.UNIT / 8),
                 fill=fill
             )
             self.agents.append({'circle': agent, 'light': light})
@@ -996,9 +1011,11 @@ class Cgrid(tk.Tk, object):
                 for a in range(len(self.agents)):
                     if math.pow(self.agents_loc[a][0]-i,2) + math.pow(self.agents_loc[a][1]-j,2)<= math.pow(self.agents_view[a],2):
                         self.canvas.itemconfig(self.grid_block[i][j], state='normal')
+                        self.canvas.itemconfig(self.grid_mark[i][j], state='normal')
                         break
                     else:
                         self.canvas.itemconfig(self.grid_block[i][j], state='disabled')
+                        self.canvas.itemconfig(self.grid_mark[i][j], state='disabled')
 
         for each in self.vbs:
             re = self.canvas.itemcget(self.grid_block[each['pos'][0]][each['pos'][1]], 'state')
@@ -1010,11 +1027,11 @@ class Cgrid(tk.Tk, object):
             re = self.canvas.itemcget(self.grid_block[each['pos'][0]][each['pos'][1]], 'state')
             if re == 'disabled':
                 self.canvas.itemconfig(each['stat'], state='disabled')
-        for each in self.obs:
-            re = self.canvas.itemcget(self.grid_block[each['pos'][0]][each['pos'][1]], 'state')
-            if re == 'disabled':
-                self.canvas.itemconfig(each['l1'], state='disabled')
-                self.canvas.itemconfig(each['l2'], state='disabled')
+        # for each in self.obs:
+        #     re = self.canvas.itemcget(self.grid_block[each['pos'][0]][each['pos'][1]], 'state')
+        #     if re == 'disabled':
+        #         self.canvas.itemconfig(each['l1'], state='disabled')
+        #         self.canvas.itemconfig(each['l2'], state='disabled')
 
         # pack all
         self.canvas.pack()
@@ -1023,10 +1040,12 @@ class Cgrid(tk.Tk, object):
         s = []
         s_ =[]
         for i, ag in enumerate(self.agents):
-            coor=self.canvas.coords(ag['circle'])
-            s.append([int(coor[0])/self.staticInfo.UNIT, int(coor[1])/self.staticInfo.UNIT])
+            x0,y0,x1,y1 = self.canvas.bbox(ag['circle'])
+            coor = [(x0+x1)/2,(y0+y1)/2]
+            s.append([math.floor(int(coor[0])/int(self.staticInfo.UNIT)), math.floor((self.map_h*self.staticInfo.UNIT-int(coor[1]))/self.staticInfo.UNIT)])
+            self.canvas.itemconfig(self.grid_mark[s[i][0]][s[i][1]], state='normal', fill='red')
             base_action = np.array([(new_locs[i][0]-s[i][0]) * self.staticInfo.UNIT,
-                                    (new_locs[i][1]-s[i][1])*self.staticInfo.UNIT])
+                                    -(new_locs[i][1]-s[i][1])*self.staticInfo.UNIT])
             self.canvas.move(ag['circle'], base_action[0], base_action[1])  # move agent circle
             self.canvas.move(ag['light'], base_action[0],base_action[1])
             if new_e[i] == 0:
@@ -1036,11 +1055,12 @@ class Cgrid(tk.Tk, object):
             else:
                 fill = 'red'
             self.canvas.itemconfig(ag['light'], fill=fill)
-            for r in range(max(0,new_locs[i][0]-new_sr[i]),min(self.map_w,new_locs[i][0]+new_sr[i]+1)):
-                for c in range(max(0,new_locs[i][1]-new_sr[i]),min(self.map_h,new_locs[i][1]+new_sr[1]+1)):
+            for r in range(int(max(0,new_locs[i][0]-new_sr[i])),int(min(self.map_w,new_locs[i][0]+new_sr[i]+1))):
+                for c in range(int(max(0,new_locs[i][1]-new_sr[i])),int(min(self.map_h,new_locs[i][1]+new_sr[1]+1))):
                     if math.pow(r-new_locs[i][0],2)+math.pow(c-new_locs[i][1],2)<= new_sr[i]*new_sr[i]:
                         if self.canvas.itemcget(self.grid_block[r][c],'state') == 'disabled':
                             self.canvas.itemconfig(self.grid_block[r][c],state='normal')
+                            self.canvas.itemconfig(self.grid_mark[r][c],state='normal')
 
             for each in self.vbs:
                 re = self.canvas.itemcget(self.grid_block[each['pos'][0]][each['pos'][1]], 'state')
@@ -1053,11 +1073,11 @@ class Cgrid(tk.Tk, object):
                 re = self.canvas.itemcget(self.grid_block[each['pos'][0]][each['pos'][1]], 'state')
                 if re == 'normal':
                     self.canvas.itemconfig(each['stat'], state='normal')
-            for each in self.obs:
-                re = self.canvas.itemcget(self.grid_block[each['pos'][0]][each['pos'][1]], 'state')
-                if re == 'normal':
-                    self.canvas.itemconfig(each['l1'], state='normal')
-                    self.canvas.itemconfig(each['l2'], state='normal')
+            # for each in self.obs:
+            #     re = self.canvas.itemcget(self.grid_block[each['pos'][0]][each['pos'][1]], 'state')
+            #     if re == 'normal':
+            #         self.canvas.itemconfig(each['l1'], state='normal')
+            #         self.canvas.itemconfig(each['l2'], state='normal')
             s_.append([new_locs[i][0],new_locs[i][1]])
         return s_
 
@@ -1130,16 +1150,16 @@ class Cgrid(tk.Tk, object):
         agent_info = (self.agents_loc, self.agents_e)
         return agent_info
 
-    def render(self,new_locs,new_e,new_sr):
-        time.sleep(0.1)
-        self.update(new_locs,new_e,new_sr)
+    # def render(self,new_locs,new_e,new_sr):
+    #     time.sleep(0.1)
+    #     self.update(new_locs,new_e,new_sr)
 
-def update(new_locs,new_e,new_sr):
-    while True:
-        if new_locs is None:
-            break
-        env.render(new_locs,new_e,new_sr)
-        s_ = env.step(new_locs,new_e,new_sr)
+# def update(new_locs,new_e,new_sr):
+# #     while True:
+# #         if new_locs is None:
+# #             break
+# #         env.render(new_locs,new_e,new_sr)
+# #         s_ = env.step(new_locs,new_e,new_sr)
 
 
 
@@ -1170,35 +1190,49 @@ if __name__ == '__main__':
         drone_con_thread.start()
 
     # drawing the concrete env and all drones current state and their local_view
-    # start_time = time.time()
-    # cur_pos = []
-    # cur_e = []
-    # cur_sr = []
-    # for i in range(drone_num):
-    #     cur_pos.append([fleet[i].cur_PX, fleet[i].cur_PY])
-    #     cur_e.append(fleet[i].cur_E)
-    #     cur_sr.append(fleet[i].SR)
-    # env_window = Cgrid(env= env,agents_info=(cur_pos,cur_e),agents_view=cur_sr)
+    start_time = time.time()
+    cur_pos = []
+    cur_e = []
+    cur_sr = []
+    for i in range(drone_num):
+        cur_pos.append([fleet[i].cur_PX, fleet[i].cur_PY])
+        if fleet[i].cur_E >= fleet[i].E * (1 - fleet[i].experiment_config.W_Threshold):
+            new_e = 0
+        elif fleet[i].E * (1 - fleet[i].experiment_config.C_Threshold) <= fleet[i].cur_E < fleet[i].E * (
+                1 - fleet[i].experiment_config.W_Threshold):
+            new_e = 1
+        else:
+            new_e = 2
+        cur_e.append(new_e)
+        cur_sr.append(fleet[i].SR)
+    env_window = Cgrid(env= env,agents_info=(cur_pos,cur_e),agents_view=cur_sr)
     # env_window.mainloop()
-    #
-    # while True:
-    #     cur_pos = []
-    #     cur_e = []
-    #     cur_sr = []
-    #     for i in range(drone_num):
-    #         cur_pos.append([fleet[i].cur_PX, fleet[i].cur_PY])
-    #         cur_e.append(fleet[i].cur_E)
-    #         cur_sr.append(fleet[i].SR)
-    #
-    #     time.sleep(0.2)
-    #     s_ = env_window.step(cur_pos, cur_e, cur_sr)
-    #     time.sleep(3)
-    #     time_elapse = time.time() - start_time
-    #     if time_elapse > fleet[0].experiment_config.timeout:
-    #         break
+
+    while True:
+        cur_pos = []
+        cur_e = []
+        cur_sr = []
+        for i in range(drone_num):
+            cur_pos.append([fleet[i].cur_PX, fleet[i].cur_PY])
+            new_e = -1
+            if fleet[i].cur_E >= fleet[i].E *(1-fleet[i].experiment_config.W_Threshold):
+                new_e = 0
+            elif fleet[i].E *(1-fleet[i].experiment_config.C_Threshold) <= fleet[i].cur_E < fleet[i].E *(1-fleet[i].experiment_config.W_Threshold):
+                new_e = 1
+            else:
+                new_e = 2
+            cur_e.append(new_e)
+            cur_sr.append(fleet[i].SR)
+        s_ = env_window.step(cur_pos, cur_e, cur_sr)
+        env_window.update_idletasks()
+        env_window.update()
+        time.sleep(0.1)
+        time_elapse = time.time() - start_time
+        if time_elapse > fleet[0].experiment_config.timeout:
+            break
 
 
-    time.sleep(600)
+    # time.sleep(600)
 
     for i in range(drone_num):
         fleet[i].terminate()

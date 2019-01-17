@@ -18,7 +18,7 @@ class Point:
             self.is_charge_p = True
         self.visited = visited
         self.visit_count = visit_count
-        if victims_num:
+        if victims_num is not None:
             self.victims_num = victims_num
         else:
             self.victims_num = random.randint(0, 10)  # TODO: 范围内的人员分布是否要完全没有规律,随机生成,随机变动？

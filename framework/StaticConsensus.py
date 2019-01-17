@@ -15,7 +15,7 @@ Experiments Arguments:
 class StaticInfo:
 
     def __init__(self):
-        self.UNIT = 400  # pixel
+        self.UNIT = 60  # pixel
         self.VIEWS_INDEX = {'drone_local_nodes': 0,
                             'drone_local_edges': 1,
                             'drone_self_info': 2,
@@ -43,7 +43,7 @@ class StaticInfo:
 class ExperimentConfig:
 
     def __init__(self):
-        self.timeout = 600
+        self.timeout = 400
         self.center_check_interval = 10
         self.W_Threshold = 0.6
         self.C_Threshold = 0.8
