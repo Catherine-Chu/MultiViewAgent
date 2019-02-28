@@ -37,6 +37,7 @@ class ConcreteEnv:
                 self.edge_num = metadata['edge_num']
                 self.charge_num = metadata['charge_num']
                 self.obstacle_num = metadata['obstacle_num']
+                self.danger_num = metadata['danger_num']
                 self.env_change_prob = metadata['env_change_prob']
                 # 环境变化概率,list[3],分别表示bolcked,victims_num,need_rescue的变化概率
                 self.stat_change_prob = metadata['stat_change_prob']
@@ -50,8 +51,10 @@ class ConcreteEnv:
                     def_edges = default['edges']
                     self.Nodes = []
                     self.Edges = []
-                    drone_ids = []
-                    not_allow_locs = []
+                    drone_ids = [[],[],[]]
+                    danger_dis = []
+                    block_dis = []
+                    safe_dis = []
                     for i in range(self.width):
                         self.Nodes.append([])
                         for j in range(self.height):
@@ -67,11 +70,21 @@ class ConcreteEnv:
                                               visit_count=node['visit_count'],
                                               t_request=node['t_request'])
                                 if node['node_type'] == 1:
+                                    block_dis.append(node['node_id'])
+                                else:
+                                    danger_dis.append(node['node_id'])
+                                if node['node_type'] == 1 or node['node_type'] == 3:
                                     if node['node_id'] in drone_locs.values():
-                                        d_id = list(drone_locs.keys())[list(drone_locs.values()).index(node['node_id'])]
-                                        drone_ids.append(d_id)
-                                        not_allow_locs.append(node['node_id'])
+                                        d_id_0 = list(drone_locs[0].keys())[list(drone_locs[0].values()).index(node['node_id'])]
+                                        d_id_1 = list(drone_locs[1].keys())[list(drone_locs[1].values()).index(node['node_id'])]
+                                        d_id_2 = list(drone_locs[2].keys())[list(drone_locs[2].values()).index(node['node_id'])]
+                                        drone_ids[0].append(d_id_0)
+                                        drone_ids[1].append(d_id_1)
+                                        drone_ids[2].append(d_id_2)
+                                else:
+                                    safe_dis.append(node['node_id'])
                             else:
+                                safe_dis.append(node['node_id'])
                                 new_p = ChargingPoint(sid=node['station_id'],
                                                       nid=node['node_id'],
                                                       pos_x=node['pos_x'],
@@ -97,18 +110,26 @@ class ConcreteEnv:
                         self.Edges.append(new_e)
 
                     qt = QueryTool()
-                    a_list = list(set(range(self.width * self.height)).difference(set(not_allow_locs)))
-                    new_locs = list(np.random.choice(a=a_list, size=len(drone_ids), replace=False, p=None))
+                    list_0 = list(set(safe_dis).difference(set(drone_locs[0].values).union(set(drone_locs[1].values)).union(set(drone_locs[2].values))))
+                    new_locs_0 = list(np.random.choice(a=list_0,size=len(drone_ids[0]),replace=False,p=None))
+                    new_locs_2 = list(np.random.choice(a=list(set(list_0).difference(set(new_locs_0))),size=len(drone_ids[2]),replace=False,p=None))
+                    list_1 = set(list_0).difference(set(new_locs_0)).difference(set(new_locs_2)).union(set(danger_dis).difference(set(drone_locs[1])))
+                    new_locs_1 = list(np.random.choice(a=list_1,size = len(drone_ids[1], replace=False,p=None)))
+
+                    new_locs = [new_locs_0,new_locs_1,new_locs_2]
+                    # a_list = list(set(range(self.width * self.height)).difference(set(not_allow_locs)))
+                    # new_locs = list(np.random.choice(a=a_list, size=len(drone_ids), replace=False, p=None))
 
                     qt.update_drones_location(
                         drone_ids=drone_ids,
                         new_locs=new_locs,
                     )
+                    qt.clear_db_connection()
             else:
                 with open(file='../data/default_env.json', mode='w') as fw:
                     dg = GlobalDataInitializer(agent_num=None, map_width=self.width,
                                                map_height=self.height, charge_num=self.charge_num,
-                                               obstacle_num=self.obstacle_num,
+                                               obstacle_num=self.obstacle_num, danger_num=self.danger_num,
                                                charge_pos_list=None, db_used=False)
                     self.Nodes, self.Edges = dg.initDefaultEnv(charge_list=self.charge_list, drone_locs=drone_locs)
                     nodes_json = []
@@ -123,6 +144,8 @@ class ConcreteEnv:
                                 node['node_type'] = 1
                             elif self.Nodes[i][j].is_charge_p:
                                 node['node_type'] = 2
+                            elif self.Nodes[i][j].danger_level == 1:
+                                node['node_type'] = 3
                             else:
                                 node['node_type'] = 0
                             node['visited'] = self.Nodes[i][j].visited
@@ -166,13 +189,17 @@ class ConcreteEnv:
 class LocalViewMap:
 
     def __init__(self, data=None):
+        self.exp_config = ExperimentConfig()
         self.Edges = {}
         self.Nodes = {}
+        self.Neighbors = {}
         if data:
             n_col_names = data[0][0]
             n_records = data[0][1]  # list of list(record)
             e_col_names = data[1][0]
             e_records = data[1][1]  # list of list(record)
+            u_col_names = data[2][0]
+            u_records = data[2][1]
             for i in range(len(n_records)):
                 node = {}
                 for col in range(len(n_col_names)):
@@ -197,19 +224,29 @@ class LocalViewMap:
                              to_p=edge['to_id'],
                              distance=edge['distance'])
                 self.Edges[edge['from_id'] + '_' + edge['to_id']] = new_e
-        self.update_state = [{}, {}, [], []]
+            for k in range(len(u_records)):
+                neighbor = {}
+                # u_record: uav_id, loc_node_id
+                for col in range(len(u_col_names)):
+                    neighbor[u_col_names[col]] = u_records[k][col]
+                self.Neighbors[neighbor['loc_node_id']] = neighbor['neighbor_id']
+
+        self.update_state = [{}, {}, [], [], []]
         for key in self.Nodes.keys():
             self.update_state[0][key] = (False, None)
         for key in self.Edges.keys():
             self.update_state[1][key] = (False, None)
 
         self.charge_targets = []
-        self.rescue_targets = []
+        self.rescue_targets = {}
+        self.delivery_targets = {}
 
         for i in range(len(self.charge_targets)):
             self.update_state[2].append((False, None))
         for i in range(len(self.rescue_targets)):
             self.update_state[3].append((False, None))
+        for i in range(len(self.rescue_targets)):
+            self.update_state[4].append((False, None))
 
     def update_map(self, data, sense_time=None):
         try:
@@ -234,6 +271,7 @@ class LocalViewMap:
                 # 所有数据记录都把更新标记标为False
                 self.Edges.clear()
                 self.Nodes.clear()
+                self.Neighbors.clear()
                 self.update_state[0].clear()
                 self.update_state[1].clear()
 
@@ -241,6 +279,9 @@ class LocalViewMap:
                 n_records = data[0][1]  # list of list(record)
                 e_col_names = data[1][0]
                 e_records = data[1][1]  # list of list(record)
+                u_col_names = data[2][0]
+                u_records = data[2][1]
+
                 for i in range(len(n_records)):
                     node = {}
                     for col in range(len(n_col_names)):
@@ -267,6 +308,13 @@ class LocalViewMap:
                                  distance=edge['distance'])
                     self.Edges[(edge['from_id'], edge['to_id'])] = new_e
                     self.update_state[1][(edge['from_id'], edge['to_id'])] = (False, None)
+                for k in range(len(u_records)):
+                    neighbor = {}
+                    # u_record: uav_id, loc_node_id
+                    for col in range(len(u_col_names)):
+                        neighbor[u_col_names[col]] = u_records[k][col]
+                    self.Neighbors[neighbor['loc_node_id']] = neighbor['neighbor_id']
+
                 return True
         except Exception as e:
             print(e)
@@ -278,4 +326,74 @@ class LocalViewMap:
 
     def update_rescue_targets(self, data, sense_time=None):
         # TODO: if get from view, set (FALSE,NONE); else update and set (TRUE,TIME)
-        return True
+        try:
+            if sense_time is not None:
+                #从环境中观察到的目标信息
+                for key, value in data.items():
+                    self.rescue_targets[key] = (value, True)
+                    self.update_state[3][key] = (True, sense_time)
+                return True
+            else:
+                #从中心获取的信息
+                self.update_state[3].clear()
+                self.rescue_targets.clear()
+                t_col_names = data[0][0]
+                t_records = data[0][1]
+                for i in range(len(t_records)):
+                    target = {}
+                    for col in range(len(t_col_names)):
+                        target[t_col_names[col]] = t_records[i][col]
+
+                    new_p = Point(nid=target['target_id'],
+                                  pos_x=target['pos_x'],
+                                  pos_y=target['pos_y'],
+                                  node_type=3,
+                                  victims_num=target['victims_num'],
+                                  need_rescue=True,
+                                  visited=False
+                                  )
+                    if target['is_allocated'] and not target['is_completed']:
+                        self.rescue_targets[target['target_id']] = (new_p, False)
+                    # else:
+                    #     self.rescue_targets[target['target_id']] = (new_p, True)
+                    self.update_state[3][target['target_id']] = (False, None)
+                return True
+        except Exception as e:
+            print(e)
+            return False
+
+    def update_delivery_targets(self, data, sense_time=None):
+        # TODO: if get from view, set (FALSE,NONE); else update and set (TRUE,TIME)
+        try:
+            if sense_time is not None:
+                for key, value in data.items():
+                    self.delivery_targets[key] = (value, True)
+                    self.update_state[4][key] = (True, sense_time)
+                return True
+            else:
+                # 从中心获取的信息
+                self.update_state[4].clear()
+                self.delivery_targets.clear()
+                t_col_names = data[0][0]
+                t_records = data[0][1]
+                for i in range(len(t_records)):
+                    target = {}
+                    for col in range(len(t_col_names)):
+                        target[t_col_names[col]] = t_records[i][col]
+                    new_p = Point(nid=target['target_id'],
+                                  pos_x=target['pos_x'],
+                                  pos_y=target['pos_y'],
+                                  node_type=0,
+                                  victims_num=self.exp_config.S_max+1,
+                                  load_demand_num=target['load_demand_num'],
+                                  need_rescue=False,
+                                  visited=False
+                                  )
+                    if target['is_allocated'] and not target['is_completed']:
+                        self.delivery_targets[target['target_id']] = (new_p,False)
+
+                    self.update_state[4][target['target_id']] = (False, None)
+                return True
+        except Exception as e:
+            print(e)
+            return False

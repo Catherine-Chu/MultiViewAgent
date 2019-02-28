@@ -20,15 +20,24 @@ class StaticInfo:
                             'drone_local_edges': 1,
                             'drone_self_info': 2,
                             'drone_charge_targets': 3,
-                            'drone_rescue_targets': 4
+                            'drone_rescue_targets': 4,
+                            'drone_delivery_targeys': 5,
+                            'drone_local_neighbors': 6
                             }
+        self.DANGER_LEVEL = {
+            'safe': 0,
+            'dangerous': 1,
+            'blocked': 2
+        }
         self.NODE_TYPE = {
-            'normal': 0,
+            'normal_safe': 0,
             'blocked': 1,
-            'charging_station': 2
+            'charging_station': 2,
+            'normal_dangerous': 3
         }
         self.TASK_INDEX = {'search_recoverage':0,
-                           'rescue_support':1}
+                           'rescue_support':1,
+                           'transport':2}
         self.FLYING_STATE = {
             'WW':0,
             'IW':1,
@@ -43,10 +52,17 @@ class StaticInfo:
 class ExperimentConfig:
 
     def __init__(self):
-        self.timeout = 400
-        self.center_check_interval = 10
-        self.W_Threshold = 0.6
-        self.C_Threshold = 0.8
-        self.N_Damage = 0
-        self.M_Damage = 1
-        self.S_Damage = 2
+        self.timeout = 400  # max simulation time
+        self.center_check_interval = 10  # interval(s) of checking for task status
+        self.W_Threshold = 0.6  # E charge warning threshold
+        self.C_Threshold = 0.8  # E charging threshold
+        # Drone damage degree
+        self.N_Damage = 0   # No damage
+        self.M_Damage = 1   # Medium damage
+        self.S_Damage = 2   # Serious damage
+        # Survivors threshold for refuges
+        self.S_max = 10
+        self.refuge_prob = 0.05
+        self.MAX_LOAD = 10
+        self.MAX_E = 100
+        self.FLOYD_INTERVAL = 5

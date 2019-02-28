@@ -30,10 +30,17 @@ class QueryTool:
 
     def update_drones_location(self, drone_ids, new_locs):
         for i in range(len(drone_ids)):
-            self.cur.execute("UPDATE public.drones_cur_state "
-                             "SET loc_node_id = {} "
-                             "WHERE uav_id = {}".format(new_locs[i], drone_ids[i]))
+            for j in range(len(drone_ids[i])):
+                self.cur.execute("UPDATE public.drones_cur_state "
+                                 "SET loc_node_id = {} "
+                                 "WHERE uav_id = {}".format(new_locs[i][j], drone_ids[i][j]))
         return True
+
+    def sql_execute(self, query):
+        self.cur.execute(query)
+        rows = self.cur.fetchall()
+        colnames = [desc[0] for desc in self.cur.description]
+        return colnames, rows
 
     def clear_db_connection(self):
         self.conn.commit()

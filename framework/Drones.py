@@ -8,6 +8,7 @@ from threading import Thread
 import json
 import heapq
 import tkinter as tk
+import copy
 import numpy as np
 
 sys.path.append('../')
@@ -32,14 +33,14 @@ class UAV:
 
         self.Local_View_Map = LocalViewMap()  # 空局部地图View
         self.cur_charge_tar = None
-        self.cur_rescue_tar = None
+        self.cur_rescue_tar = []
+        self.cur_delivery_tar = None
 
         self.action_space = [(0, 1, 1), (0, -1, 1), (-1, 0, 1), (1, 0, 1), (0, 0, 1), (0, 0, 0)]
         self.path_buffer = []
         self.start = True
 
         self.state_init()
-
 
     def state_init(self):
         get_data, _ = self.connect_with_center(RoW='R', View_List=[2], GoL='L')  # list
@@ -82,11 +83,20 @@ class UAV:
         # if self.socket is not None:
         #     self.socket.close()
 
-    def connect_with_center(self, RoW='R', View_List=None, GoL='L', Datas=None, SQLs=None):
+    def connect_with_center(self, RoW='R', View_List=None, GoL='L', Datas=None, SQLs=None, Compute=False, Func=None):
         self.socket = socket(AF_INET, SOCK_STREAM)
         self.socket.connect((self.HOST, self.PORT))
-
-        send_data = self.before_send_request(RoW, View_List, GoL, Datas, SQLs)
+        if not Compute:
+            send_data = self.before_send_request(RoW, View_List, GoL, Datas, SQLs)
+        else:
+            send_data = {'RoW': 'R',
+                         'GoL': 'G',
+                         'Compute': True,
+                         'uav_id': self.UID,
+                         'task_id': self.TID,
+                         'loc_node_id': self.cur_NID,
+                         'func': Func,
+                         'request_time': time.time()}
         send_data = json.dumps(send_data)
         # print(send_data)
         self.socket.send(send_data.encode())
@@ -104,12 +114,12 @@ class UAV:
                     print(data)
                     continue
                 elif data == "Put is done.":
-                    print("Put is done")
+                    print("Put is done.")
                     break
                 else:
                     print("Receiving meaningful data.")
                     data = json.loads(data)
-                    if isinstance(data, list):
+                    if isinstance(data, list) or isinstance(data, dict):
                         self.socket.send('Data is received.'.encode())
                         get_data = data
                         break
@@ -272,7 +282,7 @@ class UAV:
                 if self.TID == 0:
                     # working in search_coverage_task
                     if not self.is_work_done(0):
-                        get_data, _ = self.connect_with_center(RoW='R', View_List=[0, 1], GoL='L')
+                        get_data, _ = self.connect_with_center(RoW='R', View_List=[0, 1, 6], GoL='L')
                         # 以下两句会将Local_View_Map中的数据更新到最新,第一句得到的数据均标记为未更新(因为是从center拿到的)
                         # 第二句中sense到的并且和Local_View_Map中数据不一致的要更新,并把所有更新过的标记为已更新
                         # print(get_data)
@@ -289,10 +299,8 @@ class UAV:
                                                      SQLs=None)
 
                             next_nid, next_x, next_y = self.make_move_decision(tid=0, scale=(env.width, env.height))
-                            print("next_nid is ", next_nid)
-                            print("next x is", next_x)
-                            print("next y is", next_y)
                             print("\n\n\n")
+                            print("task 0, next_nid: {}, next_x: {}, next_y: {}\n\n\n".format(next_nid,next_x,next_y))
                             if next_nid is not None:
                                 sense_time = self.move(next_nid, next_x, next_y)
                                 new_data = [[{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
@@ -308,9 +316,10 @@ class UAV:
                                 if self.VR < math.sqrt(env.width * env.width + env.height * env.height):
                                     self.VR = math.ceil(math.sqrt(env.width * env.width + env.height * env.height))
                                     sense_time = time.time()
-                                    new_data = [[{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
-                                                 'CE': self.cur_E,
-                                                 'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                                    new_data = [
+                                        [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
+                                          'CE': self.cur_E,
+                                          'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
                                     self.connect_with_center(RoW='W', View_List=[2], GoL='L',
                                                              Datas={'sense_time': sense_time,
                                                                     'new_data': new_data},
@@ -319,38 +328,38 @@ class UAV:
                                 else:
                                     self.cur_State = 5
                                     break
-                        else:
-                            new_data = self.gen_new_data(View_List=[0, 1, 2])
-                            self.connect_with_center(RoW='W', View_List=[0, 1, 2], GoL='L',
-                                                     Datas={'sense_time': sense_time,
-                                                            'new_data': new_data},
-                                                     SQLs=None)
-                            # time.sleep(1)
-                            get_data, _ = self.connect_with_center(RoW='R', View_List=[3], GoL='L')
-
-                            # print("\n\n\n")
-                            # print("Charge tar view reading check")
-                            # print(get_data)
-                            # print(len(get_data))  # 1
-                            # print(len(get_data[0]))  # 2
-                            # print(len(get_data[0][1]))  # 可选充电目标点数目,目前的表格中初步估计为0
-                            # print("\n\n\n")
-
-                            charge_tar = get_data[0]
-
-                            self.Local_View_Map.update_charge_stations(charge_tar)
-                            self.cur_State = 2
+                        # else:
+                        #     new_data = self.gen_new_data(View_List=[0, 1, 2])
+                        #     self.connect_with_center(RoW='W', View_List=[0, 1, 2], GoL='L',
+                        #                              Datas={'sense_time': sense_time,
+                        #                                     'new_data': new_data},
+                        #                              SQLs=None)
+                        #     # time.sleep(1)
+                        #     get_data, _ = self.connect_with_center(RoW='R', View_List=[3], GoL='L')
+                        #
+                        #     # print("\n\n\n")
+                        #     # print("Charge tar view reading check")
+                        #     # print(get_data)
+                        #     # print(len(get_data))  # 1
+                        #     # print(len(get_data[0]))  # 2
+                        #     # print(len(get_data[0][1]))  # 可选充电目标点数目,目前的表格中初步估计为0
+                        #     # print("\n\n\n")
+                        #
+                        #     charge_tar = get_data[0]
+                        #
+                        #     self.Local_View_Map.update_charge_stations(charge_tar)
+                        #     self.cur_State = 2
                     else:
                         self.cur_State = 5
                         break
                 elif self.TID == 1:
                     # working in rescue_coverage_task
                     if not self.is_work_done(1):
-                        get_data, _ = self.connect_with_center(RoW='R', View_List=[0, 1, 4], GoL='L')
+                        get_data, _ = self.connect_with_center(RoW='R', View_List=[0, 1, 6, 4], GoL='L')
                         # 以下两句会将Local_View_Map中的数据更新到最新,第一句得到的数据均标记为未更新(因为是从center拿到的)
                         # 第二句中sense到的并且和Local_View_Map中数据不一致的要更新,并把所有更新过的标记为已更新
-                        self.Local_View_Map.update_map(get_data[0:2])
-                        self.Local_View_Map.update_rescue_targets(get_data[2])
+                        self.Local_View_Map.update_map(get_data[0:3])
+                        self.Local_View_Map.update_rescue_targets(get_data[3])
                         self.cur_rescue_tar = self.choose_rescue_target()
                         sense_time = self.sense_within_range(env)
                         healthy = self.self_check()
@@ -362,11 +371,80 @@ class UAV:
                                                      SQLs=None)
 
                             next_nid, next_x, next_y = self.make_move_decision(tid=1, scale=(env.width, env.height))
+                            print("\n\n\n")
+                            print("task 1, next_nid: {}, next_x: {}, next_y: {}\n\n\n".format(next_nid, next_x, next_y))
+                            if next_nid is not None:
+                                if abs(next_x - self.cur_PX) + abs(next_y - self.cur_PY) > 1:
+                                    print("Error in moving decision for rescue tasks!")
+                                    break
+                                else:
+                                    sense_time = self.move(next_nid, next_x, next_y)
+                                    new_data = [
+                                        [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
+                                          'CE': self.cur_E,
+                                          'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                                    self.connect_with_center(RoW='W', View_List=[2], GoL='L',
+                                                             Datas={'sense_time': sense_time,
+                                                                    'new_data': new_data},
+                                                             SQLs=None)
+                            else:
+                                if self.VR < math.sqrt(env.width * env.width + env.height * env.height) / 2:
+                                    self.VR = math.floor(math.sqrt(env.width * env.width + env.height * env.height) / 2)
+                                    sense_time = time.time()
+                                    new_data = [
+                                        [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
+                                          'CE': self.cur_E,
+                                          'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                                    self.connect_with_center(RoW='W', View_List=[2], GoL='L',
+                                                             Datas={'sense_time': sense_time,
+                                                                    'new_data': new_data},
+                                                             SQLs=None)
+                                    continue
+                                else:
+                                    self.cur_State = 5
+                                    break
+                        # else:
+                        #     new_data = self.gen_new_data(View_List=[0, 1, 2, 4])
+                        #     self.connect_with_center(RoW='W', View_List=[0, 1, 2, 4], GoL='L',
+                        #                              Datas={'sense_time': sense_time,
+                        #                                     'new_data': new_data},
+                        #                              SQLs=None)
+                        #     # time.sleep(1)
+                        #
+                        #     get_data, _ = self.connect_with_center(RoW='R', View_List=[3], GoL='L')
+                        #
+                        #     charge_tar = get_data[0]
+                        #     self.Local_View_Map.update_charge_stations(charge_tar)
+                        #     self.cur_State = 2
+                    else:
+                        self.cur_State = 5
+                        break
+                elif self.TID == 2:
+                    # working in delivery_task
+                    if not self.is_work_done(2):
+                        get_data, _ = self.connect_with_center(RoW='R', View_List=[0, 1, 6, 5], GoL='L')
+                        # 以下两句会将Local_View_Map中的数据更新到最新,第一句得到的数据均标记为未更新(因为是从center拿到的)
+                        # 第二句中sense到的并且和Local_View_Map中数据不一致的要更新,并把所有更新过的标记为已更新
+                        self.Local_View_Map.update_map(get_data[0:3])
+                        self.Local_View_Map.update_delivery_targets(get_data[3])
+                        self.cur_delivery_tar = self.choose_delivery_target()
+                        sense_time = self.sense_within_range(env)
+                        healthy = self.self_check()
+                        if healthy:
+                            new_data = self.gen_new_data(View_List=[0, 1, 2, 5])
+                            self.connect_with_center(RoW='W', View_List=[0, 1, 2, 5], GoL='L',
+                                                     Datas={'sense_time': sense_time,
+                                                            'new_data': new_data},
+                                                     SQLs=None)
+
+                            next_nid, next_x, next_y = self.make_move_decision(tid=2, scale=(env.width, env.height))
+                            print("\n\n\n")
+                            print("task 2, next_nid: {}, next_x: {}, next_y: {}\n\n\n".format(next_nid, next_x, next_y))
                             if next_nid is not None:
                                 sense_time = self.move(next_nid, next_x, next_y)
                                 new_data = [[{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
-                                             'CE': self.cur_E,
-                                             'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                                              'CE': self.cur_E,
+                                              'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
                                 self.connect_with_center(RoW='W', View_List=[2], GoL='L',
                                                          Datas={'sense_time': sense_time,
                                                                 'new_data': new_data},
@@ -375,9 +453,10 @@ class UAV:
                                 if self.VR < math.sqrt(env.width * env.width + env.height * env.height) / 2:
                                     self.VR = math.floor(math.sqrt(env.width * env.width + env.height * env.height) / 2)
                                     sense_time = time.time()
-                                    new_data = [[{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
-                                                 'CE': self.cur_E,
-                                                 'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                                    new_data = [
+                                        [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
+                                          'CE': self.cur_E,
+                                          'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
                                     self.connect_with_center(RoW='W', View_List=[2], GoL='L',
                                                              Datas={'sense_time': sense_time,
                                                                     'new_data': new_data},
@@ -387,23 +466,14 @@ class UAV:
                                     self.cur_State = 5
                                     break
                         else:
-                            new_data = self.gen_new_data(View_List=[0, 1, 2, 4])
-                            self.connect_with_center(RoW='W', View_List=[0, 1, 2, 4], GoL='L',
+                            new_data = self.gen_new_data(View_List=[0, 1, 2, 5])
+                            self.connect_with_center(RoW='W', View_List=[0, 1, 2, 5], GoL='L',
                                                      Datas={'sense_time': sense_time,
                                                             'new_data': new_data},
                                                      SQLs=None)
                             # time.sleep(1)
 
                             get_data, _ = self.connect_with_center(RoW='R', View_List=[3], GoL='L')
-
-                            # print("\n\n\n")
-                            # print("Charge tar view reading check")
-                            # print(get_data)
-                            # print(len(get_data))  # 1
-                            # print(len(get_data[0]))  # 2
-                            # print(len(get_data[0][1]))  # 可选充电目标点数目,目前的表格中初步估计为0
-                            # print("\n\n\n")
-
                             charge_tar = get_data[0]
                             self.Local_View_Map.update_charge_stations(charge_tar)
                             self.cur_State = 2
@@ -412,27 +482,29 @@ class UAV:
                         break
             elif self.cur_State == 2:
                 # TODO: GO FOR CHARGING
-                if self.cur_charge_tar is None:
-                    self.cur_charge_tar = self.choose_charging_station()
-                if self.cur_NID != self.cur_charge_tar.NID:
-                    # 飞到指定地点的过程中,cur_state=2不变
-                    # 但要注意判断需不需要变更指定地点
-                    # 判断依据是每到一个新地点都需要重新获取一次的charge targets view
-                    continue
-                else:
-                    # 到达指定地点时进行判断,看能不能充电
-                    # 注意:如果是由UAV主动变更charge targets view中充电站的属性,必须是到达该点的时候
-                    # 其他时候view的主动变更直接由center操作(可以理解为充电站主体主动变更并告知了center,center直接修改了相关table数据)
-                    if self.cur_charge_tar.cur_utilization < self.cur_charge_tar.charging_cap:
-                        self.cur_State = 4
-                    elif self.cur_charge_tar.queue_length < self.cur_charge_tar.queue_cap:
-                        self.cur_State = 3
-                    elif self.cur_charge_tar.dock_num < self.cur_charge_tar.dock_cap:
-                        self.cur_State = 3  # 暂时dock在充电站等待进入等待充电的队列,以及在充电队列
-                        # 再设置个量和上面的直接进入等待充电队列的分开,交给state=3的部分判断
-                    else:
-                        self.cur_State = 5  # 没有地方停,没有地方充电,只能是退出任务,随便找地方降落等待回收
-                        break
+                # if self.cur_charge_tar is None:
+                #     self.cur_charge_tar = self.choose_charging_station()
+                # if self.cur_NID != self.cur_charge_tar.NID:
+                #     # 飞到指定地点的过程中,cur_state=2不变
+                #     # 但要注意判断需不需要变更指定地点
+                #     # 判断依据是每到一个新地点都需要重新获取一次的charge targets view
+                #     continue
+                # else:
+                #     # 到达指定地点时进行判断,看能不能充电
+                #     # 注意:如果是由UAV主动变更charge targets view中充电站的属性,必须是到达该点的时候
+                #     # 其他时候view的主动变更直接由center操作(可以理解为充电站主体主动变更并告知了center,center直接修改了相关table数据)
+                #     if self.cur_charge_tar.cur_utilization < self.cur_charge_tar.charging_cap:
+                #         self.cur_State = 4
+                #     elif self.cur_charge_tar.queue_length < self.cur_charge_tar.queue_cap:
+                #         self.cur_State = 3
+                #     elif self.cur_charge_tar.dock_num < self.cur_charge_tar.dock_cap:
+                #         self.cur_State = 3  # 暂时dock在充电站等待进入等待充电的队列,以及在充电队列
+                #         # 再设置个量和上面的直接进入等待充电队列的分开,交给state=3的部分判断
+                #     else:
+                #         self.cur_State = 5  # 没有地方停,没有地方充电,只能是退出任务,随便找地方降落等待回收
+                #         break
+                self.cur_State = 5
+                break
             elif self.cur_State == 3:
                 # TODO: WAITING FOR CHARGING
                 self.cur_State = 4
@@ -459,37 +531,22 @@ class UAV:
 
     # 下面的应该全是辅助run函数实现的函数
     def is_allocated_task(self):
-        task_data, _ = self.connect_with_center(RoW='R', GoL='G', SQLs=[
-            "SELECT area_id, responsible_fleet_id, end_time FROM public.rescue_support_task",
-            "SELECT area_id, responsible_fleet_id, end_time FROM public.search_coverage_task"])
-
-        # print('\n\n\n')
-        # print("is allocated check!")
-        # print(len(task_data))  # 2
-        # print(len(task_data[0]))  # 2
-        # print(len(task_data[1]))  # 2
-        # print(len(task_data[0][1]))  # 1
-        # print(len(task_data[1][1]))  # 1
-        # print('\n\n\n')
-
-        rescue_support_task = task_data[0][1][0]  # tuple, only one area
-        search_coverage_task = task_data[1][1][0]  # tuple, only one area
-        if self.FID == search_coverage_task[1] and not search_coverage_task[2]:
-            self.TID = 0
-            return True
-        elif self.FID == rescue_support_task[1] and not rescue_support_task[2]:
-            self.TID = 1
-            return True
-        elif self.FID == search_coverage_task[1] and search_coverage_task[2]:
-            # 曾经被分配任务,且任务已结束
-            self.TID = 0
-            return False
-        elif self.FID == rescue_support_task[1] and rescue_support_task[2]:
-            self.TID = 1
-            return False
-        else:
-            # 还没有被分配任务
-            self.TID = None
+        try:
+            if self.FID == 0:
+                self.TID = 0
+                return True
+            elif self.FID == 1:
+                self.TID = 1
+                return True
+            elif self.FID == 2:
+                self.TID = 2
+                return True
+            else:
+                # 还没有被分配任务
+                self.TID = None
+                return False
+        except Exception as e:
+            print(e)
             return False
 
     def sense_within_range(self, env):
@@ -498,12 +555,14 @@ class UAV:
             local_nodes = {}
             within_list = []
             for key, node in self.Local_View_Map.Nodes.items():
-                if math.pow(node.pos_x - self.cur_PX,2) + math.pow(node.pos_y-self.cur_PY,2) <= math.pow(self.SR,2):
+                if math.pow(node.pos_x - self.cur_PX, 2) + math.pow(node.pos_y - self.cur_PY, 2) <= math.pow(self.SR,
+                                                                                                             2):
                     env_node = g_env.Nodes[node.pos_x][node.pos_y]
                     within_list.append(node.NID)
                     if not isinstance(env_node, ChargingPoint):
                         if not env_node == node:
                             local_nodes[key] = env_node
+
             local_edges = {}
             for key, edge in self.Local_View_Map.Edges.items():
                 if edge.from_p in within_list and edge.to_p in within_list:
@@ -517,32 +576,43 @@ class UAV:
         # update local view using concrete_local
         sense_time = time.time()
 
-        # print(list(concrete_local[0].keys()))
-        # print(self.cur_PX)
-        # print(self.cur_PY)
-        # print(len(env.Nodes))
-        # print(len(env.Nodes[self.cur_PX]))
+        # update view map的时候不能只按照concrete local来,有一些数据必须保留,
+        # 比如visit_count要在原本数据的基础上加1,当前位置的visited改为True等
         if not isinstance(env.Nodes[self.cur_PX][self.cur_PY], ChargingPoint):
             concrete_local[0][self.cur_NID].visited = True
             concrete_local[0][self.cur_NID].visit_count = self.Local_View_Map.Nodes[self.cur_NID].visit_count + 1
-
-        # TODO:update view map的时候不能只按照concrete local来,有一些数据必须保留,
-        # 比如visit_count要在原本数据的基础上加1,当前位置的visited改为True等
         self.Local_View_Map.update_map(concrete_local, sense_time)
 
-        # TODO:除了update_map,还要视情况看需不需要update_charging_targets和update_rescue_targets
+        # TODO:除了update_map,还要视情况看需不需要更新charging_targets,rescue_targets,delivery_targets
+        # rescue_cur_state,delivery_cur_state
         def get_local_rescue_tars(g_env):
-            rescue_tars = []
+            rescue_tars = {}
+            g_env.Nodes[self.cur_PX][self.cur_PY].victims_num = 0  # 所有victims都被救走了
+            env_node = g_env.Nodes[self.cur_PX][self.cur_PY]
+            rescue_tars[self.cur_NID] = env_node
             return rescue_tars
+
+        def get_local_delivery_tars(g_env):
+            delivery_tars = {}
+            g_env.Nodes[self.cur_PX][self.cur_PY].load_demand_num = 0  # 不再需要运输了
+            env_node = g_env.Nodes[self.cur_PX][self.cur_PY]
+            delivery_tars[self.cur_NID] = env_node
+            return delivery_tars
 
         def get_local_charge_tars(g_env):
             charge_tars = []
             return charge_tars
 
-        if self.cur_rescue_tar is not None:
-            if self.cur_NID == self.cur_rescue_tar.NID and self.cur_State == 1 and self.TID == 1:
+        if self.cur_rescue_tar is not None and len(self.cur_rescue_tar) > 0:
+            if self.cur_NID == self.cur_rescue_tar[0] and self.cur_State == 1 and self.TID == 1:
                 concrete_rescue_tars = get_local_rescue_tars(env)
                 self.Local_View_Map.update_rescue_targets(concrete_rescue_tars, sense_time)
+                self.cur_rescue_tar.pop(0)
+        if self.cur_delivery_tar is not None and len(self.cur_delivery_tar) > 0:
+            if self.cur_NID == self.cur_delivery_tar[0] and self.cur_State == 1 and self.TID == 2:
+                concrete_delivery_tars = get_local_delivery_tars(env)
+                self.Local_View_Map.update_delivery_targets(concrete_delivery_tars, sense_time)
+                self.cur_delivery_tar.pop(0)
         if self.cur_charge_tar is not None:
             if self.cur_NID == self.cur_charge_tar.NID and self.cur_State == 2:
                 concrete_charge_tars = get_local_charge_tars(env)
@@ -569,6 +639,8 @@ class UAV:
                             node_type = 1
                         elif new_node.is_charge_p:
                             node_type = 2
+                        elif new_node.danger_level == 1:
+                            node_type = 3
                         else:
                             node_type = 0
                         new_record = {'VC': new_node.visit_count,
@@ -603,62 +675,69 @@ class UAV:
             elif view_index == 4:
                 # 只有当到达指定目标点的时候才有new_data(Local_View_Map中相应位置才会被标记)
                 # 否则为空
-                for t_, new_tar in enumerate(self.Local_View_Map.rescue_targets):
+                for t_, (new_tar, is_completed) in self.Local_View_Map.rescue_targets.items():
                     if self.Local_View_Map.update_state[3][t_][0]:
                         new_record = {'VN': new_tar.victims_num,
                                       'LDN': new_tar.load_demand_num,
-                                      'IC': not new_tar.need_rescue,
+                                      'IC': is_completed,
+                                      'TID': new_tar.NID}
+                        new_data[i_].append(new_record)
+            elif view_index == 5:
+                # 只有当到达指定目标点的时候才有new_data(Local_View_Map中相应位置才会被标记)
+                # 否则为空
+                for t_, (new_tar, is_completed) in self.Local_View_Map.delivery_targets.items():
+                    if self.Local_View_Map.update_state[4][t_][0]:
+                        new_record = {'LDN': new_tar.load_demand_num,
+                                      'IC': is_completed,
                                       'TID': new_tar.NID}
                         new_data[i_].append(new_record)
 
         return new_data
 
-    def make_move_decision(self, tid, scale, healthy=True, strategy='BoB'):
+    def make_move_decision(self, tid, scale, healthy=True, search_strategy='HybridBoB',
+                           rescue_strategy='Z_Random_SSP', delivery_strategy='Random_NN'):
         # TODO: realize different moving strategies.
         if healthy:
             if tid == 0:
-                if strategy == 'BoB':
-                    print("\n\n\n")
-                    print("Now in BoB")
-                    print("Now agent on:", self.cur_NID)
+                if search_strategy == 'HybridBoB':
                     # BoB算法决策的基础是Grid中相邻两点之间的距离相等均为1
-                    # print(self.Local_View_Map.Nodes.keys())
-                    cur_node = self.Local_View_Map.Nodes[self.cur_NID]
-                    if self.start:
-                        l_o_r = 0  # -1:left, 1:right
-                        u_o_d = 0  # -1:down, 1:up
-                        if self.cur_PX <= scale[0] / 2:
-                            self.l_o_r = 1
-                        else:
-                            self.l_o_r = -1
-                        if self.cur_PY <= scale[1] / 2:
-                            self.u_o_d = 1
-                        else:
-                            self.u_o_d = -1
-                        self.start = False
+                    # cur_node = self.Local_View_Map.Nodes[self.cur_NID]
+                    # TODO: New Bob
+                    # if self.start:
+                    #     l_o_r = 0  # -1:left, 1:right
+                    #     u_o_d = 0  # -1:down, 1:up
+                    #     if self.cur_PX <= scale[0] / 2:
+                    #         self.l_o_r = 1
+                    #     else:
+                    #         self.l_o_r = -1
+                    #     if self.cur_PY <= scale[1] / 2:
+                    #         self.u_o_d = 1
+                    #     else:
+                    #         self.u_o_d = -1
+                    #     self.start = False
+                    prior_chioce = [0, 2, 1, 3]
                     has_next = False
                     valid_next = []
                     if len(self.path_buffer) == 0:
+                        urgent_stats = []
                         for i in range(4):
+                            has_neighbor = False
                             next_x = self.action_space[i][0] + self.cur_PX
                             next_y = self.action_space[i][1] + self.cur_PY
                             if 0 <= next_x < scale[0] and 0 <= next_y < scale[1]:
                                 next_nid = next_x * scale[1] + next_y
-
-                                # print("\n\n\n")
-                                # print("cur x,y:", self.cur_PX, self.cur_PY)
-                                # print("cur nid is:", self.cur_NID)
-                                # print("next x,y:", next_x, next_y)
-                                # print("next nid is:", next_nid)
-                                # print("size of local view:", len(self.Local_View_Map.Nodes))
-                                # print(self.Local_View_Map.Nodes.keys)
-                                # print("\n\n\n")
-
                                 next_node = self.Local_View_Map.Nodes[next_nid]
+                                if next_nid in list(self.Local_View_Map.Neighbors.keys()):
+                                    has_neighbor = True
+                                is_valid = (not next_node.blocked and not next_node.visited) and \
+                                           (not has_neighbor)
+                                if next_node.is_charge_p:
+                                    urgent_stats.append(next_node)
+                                if self.FID == 0 or self.FID == 2:
+                                    if next_node.danger_level > 0:
+                                        is_valid = False
 
-                                is_valid = next_node.is_charge_p or (not next_node.blocked and not next_node.visited)
                                 has_next = has_next or is_valid
-
                                 if is_valid:
                                     valid_next.append(True)
                                 else:
@@ -666,71 +745,86 @@ class UAV:
                             else:
                                 valid_next.append(False)
                                 continue
-                        print("has_next is ", has_next)
-                        print("valid_next is", valid_next)
                         if has_next:
-                            print("result 1 x,y:", self.cur_PX, self.cur_PY)
-                            next_y = self.cur_PY + self.u_o_d
-                            if 0 <= next_y < scale[1]:
-                                print("result 1 next_y", next_y)
-                                next_nid = self.cur_PX * scale[1] + next_y
-                                next_node = self.Local_View_Map.Nodes[next_nid]
-                            if 0 <= next_y < scale[1] and (next_node.is_charge_p or (
-                                    not next_node.blocked and not next_node.visited)):
-                                print("1 result, u_o_d: {}, l_o_r: {}".format(self.u_o_d, self.l_o_r))
-                                return next_nid, self.cur_PX, next_y
-                            else:
-                                print("result 2 x,y:", self.cur_PX, self.cur_PY)
-                                next_y = self.cur_PY - self.u_o_d
-                                if 0 <= next_y < scale[1]:
-                                    print("result 2 next_y", next_y)
-                                    next_nid = self.cur_PX * scale[1] + next_y
-                                    next_node = self.Local_View_Map.Nodes[next_nid]
-                                if 0 <= next_y < scale[1] and (next_node.is_charge_p or (
-                                        not next_node.blocked and not next_node.visited)):
-                                    self.u_o_d = -self.u_o_d
-                                    print("2 result, u_o_d: {}, l_o_r: {}".format(self.u_o_d, self.l_o_r))
-                                    return next_nid, self.cur_PX, next_y
-                                else:
-                                    print("result 3 x,y:", self.cur_PX, self.cur_PY)
-                                    next_x = self.cur_PX + self.l_o_r
-                                    if 0 <= next_x < scale[0]:
-                                        print("result 3 next_x", next_x)
-                                        next_nid = next_x * scale[1] + self.cur_PY
-                                        next_node = self.Local_View_Map.Nodes[next_nid]
-                                    if 0 <= next_x < scale[0] and (next_node.is_charge_p or (
-                                            not next_node.blocked and not next_node.visited)):
-                                        self.u_o_d = -self.u_o_d
-                                        print("3 result, u_o_d: {}, l_o_r: {}".format(self.u_o_d, self.l_o_r))
-                                        return next_nid, next_x, self.cur_PY
-                                    else:
-                                        print("result 4 x,y:", self.cur_PX, self.cur_PY)
-                                        next_x = self.cur_PX - self.l_o_r
-                                        if 0 <= next_x < scale[0]:
-                                            print("result 4 next_x", next_x)
-                                            next_nid = next_x * scale[1] + self.cur_PY
-                                            next_node = self.Local_View_Map.Nodes[next_nid]
-                                        if 0 <= next_x < scale[0] and (next_node.is_charge_p or (
-                                                not next_node.blocked and not next_node.visited)):
-                                            self.u_o_d = -self.u_o_d
-                                            self.l_o_r = -self.l_o_r
-                                            print("4 result, u_o_d: {}, l_o_r: {}".format(self.u_o_d, self.l_o_r))
-                                            return next_nid, next_x, self.cur_PY
-                                        else:
-                                            raise CustomError("No valid next action when has_next was TRUE!")
-                                            return None, None, None
+                            # TODO: New Bob
+                            # print("result 1 x,y:", self.cur_PX, self.cur_PY)
+                            # next_y = self.cur_PY + self.u_o_d
+                            # if 0 <= next_y < scale[1]:
+                            #     print("result 1 next_y", next_y)
+                            #     next_nid = self.cur_PX * scale[1] + next_y
+                            #     next_node = self.Local_View_Map.Nodes[next_nid]
+                            # if 0 <= next_y < scale[1] and (next_node.is_charge_p or (
+                            #         not next_node.blocked and not next_node.visited)):
+                            #     print("1 result, u_o_d: {}, l_o_r: {}".format(self.u_o_d, self.l_o_r))
+                            #     return next_nid, self.cur_PX, next_y
+                            # else:
+                            #     print("result 2 x,y:", self.cur_PX, self.cur_PY)
+                            #     next_y = self.cur_PY - self.u_o_d
+                            #     if 0 <= next_y < scale[1]:
+                            #         print("result 2 next_y", next_y)
+                            #         next_nid = self.cur_PX * scale[1] + next_y
+                            #         next_node = self.Local_View_Map.Nodes[next_nid]
+                            #     if 0 <= next_y < scale[1] and (next_node.is_charge_p or (
+                            #             not next_node.blocked and not next_node.visited)):
+                            #         self.u_o_d = -self.u_o_d
+                            #         print("2 result, u_o_d: {}, l_o_r: {}".format(self.u_o_d, self.l_o_r))
+                            #         return next_nid, self.cur_PX, next_y
+                            #     else:
+                            #         print("result 3 x,y:", self.cur_PX, self.cur_PY)
+                            #         next_x = self.cur_PX + self.l_o_r
+                            #         if 0 <= next_x < scale[0]:
+                            #             print("result 3 next_x", next_x)
+                            #             next_nid = next_x * scale[1] + self.cur_PY
+                            #             next_node = self.Local_View_Map.Nodes[next_nid]
+                            #         if 0 <= next_x < scale[0] and (next_node.is_charge_p or (
+                            #                 not next_node.blocked and not next_node.visited)):
+                            #             self.u_o_d = -self.u_o_d
+                            #             print("3 result, u_o_d: {}, l_o_r: {}".format(self.u_o_d, self.l_o_r))
+                            #             return next_nid, next_x, self.cur_PY
+                            #         else:
+                            #             print("result 4 x,y:", self.cur_PX, self.cur_PY)
+                            #             next_x = self.cur_PX - self.l_o_r
+                            #             if 0 <= next_x < scale[0]:
+                            #                 print("result 4 next_x", next_x)
+                            #                 next_nid = next_x * scale[1] + self.cur_PY
+                            #                 next_node = self.Local_View_Map.Nodes[next_nid]
+                            #             if 0 <= next_x < scale[0] and (next_node.is_charge_p or (
+                            #                     not next_node.blocked and not next_node.visited)):
+                            #                 self.u_o_d = -self.u_o_d
+                            #                 self.l_o_r = -self.l_o_r
+                            #                 print("4 result, u_o_d: {}, l_o_r: {}".format(self.u_o_d, self.l_o_r))
+                            #                 return next_nid, next_x, self.cur_PY
+                            #             else:
+                            #                 raise CustomError("No valid next action when has_next was TRUE!")
+                            #                 return None, None, None
+                            next_nid = None
+                            next_x = None
+                            next_y = None
+                            for i in prior_chioce:
+                                if valid_next[i]:
+                                    next_x = self.cur_PX + self.action_space[i][0]
+                                    next_y = self.cur_PY + self.action_space[i][1]
+                                    next_nid = next_x * scale[1] + next_y
+                                    break
+                            return next_nid, next_x, next_y
                         else:
-                            # TODO:bob_find_new_start中有bug,会导致途径障碍物点(没有处理周围全是障碍物的特殊情况)
-                            # print("I am here 1!")
-                            new_start, min_len = self.bob_find_new_start()
-                            if new_start:
-                                next_node = self.Local_View_Map.Nodes[self.path_buffer[0]]
+                            if len(urgent_stats)>0:
+                                next_node = random.choice(urgent_stats)
+                                next_nid = next_node.NID
                                 next_x = next_node.pos_x
                                 next_y = next_node.pos_y
-                                next_nid = next_node.NID
                                 return next_nid, next_x, next_y
                             else:
-                                return None, None, None
+                                # TODO:bob_find_new_start中有bug,会导致途径障碍物点(没有处理周围全是障碍物的特殊情况)
+                                new_start, min_len = self.bob_find_new_start()
+                                if new_start:
+                                    next_node = self.Local_View_Map.Nodes[self.path_buffer[0]]
+                                    next_x = next_node.pos_x
+                                    next_y = next_node.pos_y
+                                    next_nid = next_node.NID
+                                    return next_nid, next_x, next_y
+                                else:
+                                    return None, None, None
                     else:
                         # print("I am here 2!")
                         new_start, min_len = self.bob_find_new_start()
@@ -743,10 +837,416 @@ class UAV:
                         else:
                             return None, None, None
             elif tid == 1:
-                next_nid = self.cur_NID
-                next_x = self.cur_PX
-                next_y = self.cur_PY
-        return next_nid, next_x, next_y
+                print("\n\ntid:1, targets:",self.cur_rescue_tar)
+                print("\n\n")
+                prior_chioce = [0, 2, 1, 3]
+                has_next = False
+                valid_next = []
+                if len(self.path_buffer) == 0:
+                    if self.cur_rescue_tar is None or len(self.cur_rescue_tar) == 0:
+                        urgent_stats = []
+                        for i in range(4):
+                            has_neighbor = False
+                            next_x = self.action_space[i][0] + self.cur_PX
+                            next_y = self.action_space[i][1] + self.cur_PY
+                            if 0 <= next_x < scale[0] and 0 <= next_y < scale[1]:
+                                next_nid = next_x * scale[1] + next_y
+                                next_node = self.Local_View_Map.Nodes[next_nid]
+                                if next_nid in list(self.Local_View_Map.Neighbors.keys()):
+                                    has_neighbor = True
+                                is_valid = (not next_node.blocked and not next_node.visited) and \
+                                           (not has_neighbor)
+                                if next_node.is_charge_p:
+                                    urgent_stats.append(next_node)
+                                if self.FID == 0 or self.FID == 2:
+                                    if next_node.danger_level > 0:
+                                        is_valid = False
+
+                                has_next = has_next or is_valid
+                                if is_valid:
+                                    valid_next.append(True)
+                                else:
+                                    valid_next.append(False)
+                            else:
+                                valid_next.append(False)
+                                continue
+                        if has_next:
+                            next_nid = None
+                            next_x = None
+                            next_y = None
+                            for i in prior_chioce:
+                                if valid_next[i]:
+                                    next_x = self.cur_PX + self.action_space[i][0]
+                                    next_y = self.cur_PY + self.action_space[i][1]
+                                    next_nid = next_x * scale[1] + next_y
+                                    break
+                            return next_nid, next_x, next_y
+                        else:
+                            if len(urgent_stats)>0:
+                                next_node = random.choice(urgent_stats)
+                                next_nid = next_node.NID
+                                next_x = next_node.pos_x
+                                next_y = next_node.pos_y
+                                return next_nid, next_x, next_y
+                            else:
+                                next_x = None
+                                next_y = None
+                                next_nid = None
+                                valid_next.clear()
+                                has_neighbors = False
+                                for i in range(4):
+                                    has_neighbor = False
+                                    next_x = self.action_space[i][0] + self.cur_PX
+                                    next_y = self.action_space[i][1] + self.cur_PY
+                                    if 0 <= next_x < scale[0] and 0 <= next_y < scale[1]:
+                                        next_nid = next_x * scale[1] + next_y
+                                        next_node = self.Local_View_Map.Nodes[next_nid]
+                                        if next_nid in list(self.Local_View_Map.Neighbors.keys()):
+                                            has_neighbor = True
+                                        is_valid = not next_node.blocked and not has_neighbor
+                                        if self.FID == 0 or self.FID == 2:
+                                            if next_node.danger_level > 0:
+                                                is_valid = False
+                                        if is_valid:
+                                            valid_next.append((next_nid, next_x, next_y))
+                                    has_neighbors = has_neighbors or has_neighbor
+                                if len(valid_next) > 0:
+                                    next_nid, next_x, next_y = random.choice(valid_next)
+                                elif has_neighbors:
+                                    # 位置不动情况1
+                                    # 说明被堵住了,周围全是障碍物和其他无人机,暂时保持不动,等待其他无人机移走
+                                    # 不需要改变view range
+                                    next_nid = self.cur_NID
+                                    next_x = self.cur_PX
+                                    next_y = self.cur_PY
+                                else:
+                                    # 位置不动情况2
+                                    # 说明被堵住了,周围全是障碍物
+                                    # 不需要改变view range, 在环境不会变的情况下就任务结束不能动了
+                                    # 在环境会变的情况下需要等待障碍物被移除
+                                    next_nid = self.cur_NID
+                                    next_x = self.cur_PX
+                                    next_y = self.cur_PY
+                                return next_nid, next_x, next_y
+                    else:
+                        print("rescue_target: ", self.cur_rescue_tar[0])
+                        if self.cur_rescue_tar[0] in list(self.Local_View_Map.Nodes.keys()):
+                            min_cost, path = self.dijkstra(tid=1)
+                        else:
+                            min_cost, path = self.dijkstra(tid=1,extended=True, extended_nids=[self.cur_rescue_tar[0]],
+                                                           extended_poses=[
+                                                               (int(math.floor(self.cur_rescue_tar[0] / scale[1])),
+                                                                int(self.cur_rescue_tar[0] % scale[1]))],
+                                                           env_scale=scale)
+                        min_len = min_cost[self.cur_rescue_tar[0]]
+                        if min_len < self.STATIC_INFO.EDGE_INX:
+                            tmp = self.cur_rescue_tar[0]
+                            self.path_buffer.insert(0, tmp)
+                            while tmp != self.cur_NID:
+                                n_ = path[tmp]
+                                if n_ != self.cur_NID:
+                                    self.path_buffer.insert(0, n_)
+                                tmp = n_
+                            next_node = self.Local_View_Map.Nodes[self.path_buffer[0]]
+                            next_x = next_node.pos_x
+                            next_y = next_node.pos_y
+                            next_nid = next_node.NID
+                            return next_nid, next_x, next_y
+                        else:
+                            print("The rescue target is in an unreachable location now.")
+                            self.path_buffer.clear()
+                            # 随机运动一下
+                            # 有target且当前位置无法到达target
+                            next_x = None
+                            next_y = None
+                            next_nid = None
+                            valid_next.clear()
+                            has_neighbors = False
+                            for i in range(4):
+                                has_neighbor = False
+                                next_x = self.action_space[i][0] + self.cur_PX
+                                next_y = self.action_space[i][1] + self.cur_PY
+                                if 0 <= next_x < scale[0] and 0 <= next_y < scale[1]:
+                                    next_nid = next_x * scale[1] + next_y
+                                    next_node = self.Local_View_Map.Nodes[next_nid]
+                                    if next_nid in list(self.Local_View_Map.Neighbors.keys()):
+                                        has_neighbor = True
+                                    is_valid = not next_node.blocked and not has_neighbor
+                                    if self.FID == 0 or self.FID == 2:
+                                        if next_node.danger_level > 0:
+                                            is_valid = False
+                                    if is_valid:
+                                        valid_next.append((next_nid, next_x, next_y))
+                                has_neighbors = has_neighbors or has_neighbor
+                            if len(valid_next) > 0:
+                                next_nid, next_x, next_y = random.choice(valid_next)
+                            elif has_neighbors:
+                                # 位置不动情况3,有目标但没办法到达目标地点,且被周围堵住了随机动都动不了
+                                # 周围全是障碍物和其他无人机,暂时保持不动,等待其他无人机移走
+                                # 不需要改变view range
+                                next_nid = self.cur_NID
+                                next_x = self.cur_PX
+                                next_y = self.cur_PY
+                            else:
+                                # 位置不动情况4,有目标但没办法到达目标地点,且被周围堵住了随机动都动不了
+                                # 周围全是障碍物
+                                # 不需要改变view range, 在环境不会变的情况下就任务结束不能动了
+                                # 在环境会变的情况下需要等待障碍物被移除
+                                next_nid = self.cur_NID
+                                next_x = self.cur_PX
+                                next_y = self.cur_PY
+                            return next_nid, next_x, next_y
+                else:
+                    if self.cur_rescue_tar is not None and len(self.cur_rescue_tar) > 0:
+                        # 由于信息不断在变,所以有路有目标的时候要更新一遍路path_buffer
+                        if self.cur_rescue_tar[0] in list(self.Local_View_Map.Nodes.keys()):
+                            min_cost, path = self.dijkstra(tid=1)
+                        else:
+                            min_cost, path = self.dijkstra(tid=1,extended=True, extended_nids=[self.cur_rescue_tar[0]],
+                                                           extended_poses=[
+                                                               (int(math.floor(self.cur_rescue_tar[0] / scale[1])),
+                                                                int(self.cur_rescue_tar[0] % scale[1]))],
+                                                           env_scale=scale)
+                        min_len = min_cost[self.cur_rescue_tar[0]]
+                        if min_len < self.STATIC_INFO.EDGE_INX:
+                            tmp = self.cur_rescue_tar[0]
+                            self.path_buffer.insert(0, tmp)
+                            while tmp != self.cur_NID:
+                                n_ = path[tmp]
+                                if n_ != self.cur_NID:
+                                    self.path_buffer.insert(0, n_)
+                                tmp = n_
+                            next_node = self.Local_View_Map.Nodes[self.path_buffer[0]]
+                            next_x = next_node.pos_x
+                            next_y = next_node.pos_y
+                            next_nid = next_node.NID
+                            return next_nid, next_x, next_y
+                        else:
+                            print("The rescue target is in an unreachable location now.")
+                            self.path_buffer.clear()
+                            # 更新信息后发现到达不了当前的目标了
+                            # 清楚原路径后随机动一下
+                            next_x = None
+                            next_y = None
+                            next_nid = None
+                            valid_next.clear()
+                            has_neighbors = False
+                            for i in range(4):
+                                has_neighbor = False
+                                next_x = self.action_space[i][0] + self.cur_PX
+                                next_y = self.action_space[i][1] + self.cur_PY
+                                if 0 <= next_x < scale[0] and 0 <= next_y < scale[1]:
+                                    next_nid = next_x * scale[1] + next_y
+                                    next_node = self.Local_View_Map.Nodes[next_nid]
+                                    if next_nid in list(self.Local_View_Map.Neighbors.keys()):
+                                        has_neighbor = True
+                                    is_valid = not next_node.blocked and not has_neighbor
+                                    if self.FID == 0 or self.FID == 2:
+                                        if next_node.danger_level > 0:
+                                            is_valid = False
+                                    if is_valid:
+                                        valid_next.append((next_nid, next_x, next_y))
+                                has_neighbors = has_neighbors or has_neighbor
+                            if len(valid_next) > 0:
+                                next_nid, next_x, next_y = random.choice(valid_next)
+                            elif has_neighbors:
+                                # 位置不动情况3,有目标但没办法到达目标地点,且被周围堵住了随机动都动不了
+                                # 周围全是障碍物和其他无人机,暂时保持不动,等待其他无人机移走
+                                # 不需要改变view range
+                                next_nid = self.cur_NID
+                                next_x = self.cur_PX
+                                next_y = self.cur_PY
+                            else:
+                                # 位置不动情况4,有目标但没办法到达目标地点,且被周围堵住了随机动都动不了
+                                # 周围全是障碍物
+                                # 不需要改变view range, 在环境不会变的情况下就任务结束不能动了
+                                # 在环境会变的情况下需要等待障碍物被移除
+                                next_nid = self.cur_NID
+                                next_x = self.cur_PX
+                                next_y = self.cur_PY
+                            return next_nid, next_x, next_y
+                    else:
+                        # 原本的路还没走完目标突然没了
+                        self.path_buffer.clear()
+                        # 清除原有路径后,随机移动一下
+                        next_x = None
+                        next_y = None
+                        next_nid = None
+                        valid_next.clear()
+                        has_neighbors = False
+                        for i in range(4):
+                            has_neighbor = False
+                            next_x = self.action_space[i][0] + self.cur_PX
+                            next_y = self.action_space[i][1] + self.cur_PY
+                            if 0 <= next_x < scale[0] and 0 <= next_y < scale[1]:
+                                next_nid = next_x * scale[1] + next_y
+                                next_node = self.Local_View_Map.Nodes[next_nid]
+                                if next_nid in list(self.Local_View_Map.Neighbors.keys()):
+                                    has_neighbor = True
+                                is_valid = not next_node.blocked and not has_neighbor
+                                if self.FID == 0 or self.FID == 2:
+                                    if next_node.danger_level > 0:
+                                        is_valid = False
+                                if is_valid:
+                                    valid_next.append((next_nid, next_x, next_y))
+                            has_neighbors = has_neighbors or has_neighbor
+                        if len(valid_next) > 0:
+                            next_nid, next_x, next_y = random.choice(valid_next)
+                        elif has_neighbors:
+                            # 位置不动情况1,没有目标
+                            # 周围全是障碍物和其他无人机,暂时保持不动,等待其他无人机移走
+                            # 不需要改变view range
+                            next_nid = self.cur_NID
+                            next_x = self.cur_PX
+                            next_y = self.cur_PY
+                        else:
+                            # 位置不动情况2,没有目标
+                            # 周围全是障碍物
+                            # 不需要改变view range, 在环境不会变的情况下就任务结束不能动了
+                            # 在环境会变的情况下需要等待障碍物被移除
+                            next_nid = self.cur_NID
+                            next_x = self.cur_PX
+                            next_y = self.cur_PY
+                        return next_nid, next_x, next_y
+            elif tid == 2:
+                print("\n\ntid:2, targets:", self.cur_delivery_tar)
+                print("\n\n")
+                con_time = 0
+                cur_time = 0
+                if len(self.path_buffer) == 0:
+                    if self.cur_delivery_tar is None or len(self.cur_delivery_tar) == 0:
+                        has_next = False
+                        valid_next = []
+                        urgent_stats = []
+                        for i in range(4):
+                            has_neighbor = False
+                            next_x = self.action_space[i][0] + self.cur_PX
+                            next_y = self.action_space[i][1] + self.cur_PY
+                            if 0 <= next_x < scale[0] and 0 <= next_y < scale[1]:
+                                next_nid = next_x * scale[1] + next_y
+                                next_node = self.Local_View_Map.Nodes[next_nid]
+                                if next_nid in list(self.Local_View_Map.Neighbors.keys()):
+                                    has_neighbor = True
+                                is_valid = (not next_node.blocked and not next_node.visited) and \
+                                           (not has_neighbor)
+                                if next_node.is_charge_p:
+                                    urgent_stats.append(next_node)
+                                if self.FID == 0 or self.FID == 2:
+                                    if next_node.danger_level > 0:
+                                        is_valid = False
+
+                                has_next = has_next or is_valid
+                                if is_valid:
+                                    valid_next.append((next_nid, next_x, next_y))
+
+                        if has_next:
+                            next_nid, next_x, next_y = random.choice(valid_next)
+                            return next_nid, next_x, next_y
+                        else:
+                            if len(urgent_stats)>0:
+                                next_node = random.choice(urgent_stats)
+                                next_nid = next_node.NID
+                                next_x = next_node.pos_x
+                                next_y = next_node.pos_y
+                                return next_nid, next_x, next_y
+                            else:
+                                less_valid_next = []
+                                danger_valid_next = []
+                                for i in range(4):
+                                    has_neighbor = False
+                                    next_x = self.action_space[i][0] + self.cur_PX
+                                    next_y = self.action_space[i][1] + self.cur_PY
+                                    if 0 <= next_x < scale[0] and 0 <= next_y < scale[1]:
+                                        next_nid = next_x * scale[1] + next_y
+                                        next_node = self.Local_View_Map.Nodes[next_nid]
+                                        if next_nid in list(self.Local_View_Map.Neighbors.keys()):
+                                            has_neighbor = True
+                                        is_valid = (next_node.is_charge_p or not next_node.blocked) and \
+                                                   (not has_neighbor)
+                                        if is_valid:
+                                            danger_valid_next.append((next_nid, next_x, next_y))
+                                        if self.FID == 0 or self.FID == 2:
+                                            if next_node.danger_level > 0:
+                                                is_valid = False
+                                        if is_valid:
+                                            less_valid_next.append((next_nid, next_x, next_y))
+                                if len(less_valid_next) > 0:
+                                    next_nid, next_x, next_y = random.choice(less_valid_next)
+                                elif len(danger_valid_next) > 0:
+                                    next_nid, next_x, next_y = random.choice(danger_valid_next)
+                                else:
+                                    next_nid = self.cur_NID
+                                    next_x = self.cur_PX
+                                    next_y = self.cur_PY
+                                return next_nid, next_x, next_y
+                    else:
+                        # 请求center计算当前点到所有目标点的最短路径(用floyd算法,一段时间内只算一遍)
+                        get_data, _ = self.connect_with_center(Compute=True, Func='Dijkstra')
+                        con_time = time.time()
+                        # 获取最短路径及最短距离后,按距离从小到大排序,选择最近的作为当前目标点
+                        # 延当前目标点对应的最短路径运动
+                        min_costs = get_data[0]
+                        path = get_data[1]
+                        tar_dis = {}
+                        for tar in self.cur_delivery_tar:
+                            tar_dis[tar] = min_costs[tar]
+                        sorted_tars = sorted(tar_dis.items(), key=lambda kv: kv[1])
+                        self.cur_delivery_tar.clear()
+                        for e in sorted_tars:
+                            self.cur_delivery_tar.append(e[0])
+                        min_len = sorted_tars[0][1]
+                        if min_len < self.STATIC_INFO.EDGE_INX:
+                            tmp = self.cur_delivery_tar[0]
+                            self.path_buffer.insert(0, tmp)
+                            while tmp != self.cur_NID:
+                                n_ = path[tmp]
+                                if n_ != self.cur_NID:
+                                    self.path_buffer.insert(0, n_)
+                                tmp = n_
+                            next_node = self.Local_View_Map.Nodes[self.path_buffer[0]]
+                            next_x = next_node.pos_x
+                            next_y = next_node.pos_y
+                            next_nid = next_node.NID
+                            return next_nid, next_x, next_y
+                else:
+                    cur_time = time.time()
+                    diff = cur_time - con_time
+                    if diff >= self.experiment_config.FLOYD_INTERVAL:
+                        get_data, _ = self.connect_with_center(Compute=True, Func='Dijkstra')
+                        con_time = time.time()
+                        # 否则重新请求计算,重新排序,重新选择最短并延当前目标点对应的最短路径运动
+                        min_costs = get_data[0]
+                        path = get_data[1]
+                        tar_dis = {}
+                        for tar in self.cur_delivery_tar:
+                            tar_dis[tar] = min_costs[tar]
+                        sorted_tars = sorted(tar_dis.items(), key=lambda kv: kv[1])
+                        self.cur_delivery_tar.clear()
+                        for e in sorted_tars:
+                            self.cur_delivery_tar.append(e[0])
+                        min_len = sorted_tars[0][1]
+                        if min_len < self.STATIC_INFO.EDGE_INX:
+                            tmp = self.cur_delivery_tar[0]
+                            self.path_buffer.insert(0, tmp)
+                            while tmp != self.cur_NID:
+                                n_ = path[tmp]
+                                if n_ != self.cur_NID:
+                                    self.path_buffer.insert(0, n_)
+                                tmp = n_
+                            next_node = self.Local_View_Map.Nodes[self.path_buffer[0]]
+                            next_x = next_node.pos_x
+                            next_y = next_node.pos_y
+                            next_nid = next_node.NID
+                            return next_nid, next_x, next_y
+                    else:
+                        # 如果距离上次请求center计算最短路径时间小于预设值则直接运动
+                        next_node = self.Local_View_Map.Nodes[self.path_buffer[0]]
+                        next_x = next_node.pos_x
+                        next_y = next_node.pos_y
+                        next_nid = next_node.NID
+                        return next_nid, next_x, next_y
+
+        return None, None, None
 
     def choose_charging_station(self):
         # TODO: realize min cost decision
@@ -755,7 +1255,11 @@ class UAV:
 
     def choose_rescue_target(self):
         # TODO: realize min cost decision
-        tar = Point(0, 0, 0)
+        tar = list(self.Local_View_Map.rescue_targets.keys())
+        return tar
+
+    def choose_delivery_target(self):
+        tar = list(self.Local_View_Map.delivery_targets.keys())
         return tar
 
     def bob_find_new_start(self):
@@ -766,7 +1270,7 @@ class UAV:
             tar = cur_tar
             min_len = len(self.path_buffer)
         else:
-            min_cost, path = self.dijkstra()
+            min_cost, path = self.dijkstra(tid=0)
             min_cost.pop(self.cur_NID)
             tmp_min_cost = list(min_cost.keys())
             for key in tmp_min_cost:
@@ -792,12 +1296,44 @@ class UAV:
                 return None, self.STATIC_INFO.EDGE_INX
         return tar, min_len
 
-    def dijkstra(self):
+    def dijkstra(self, tid=1, extended=False, extended_nids=[], extended_poses=[], env_scale=None):
         visited = {self.cur_NID: 0}  # 包含所有已添加的点,并且key-value对表示key对应的点到initial点(即self.cur_NID)的最小距离
         h = [(0, self.cur_NID)]
         path = {}  # path[v]=a,代表到达v之前的一个点是a,需要回溯得到整个路径
 
-        nodes_index = set(set(range(len(self.Local_View_Map.Nodes))))
+        if extended:
+            Nodes = copy.deepcopy(self.Local_View_Map.Nodes)
+            Edges = copy.deepcopy(self.Local_View_Map.Edges)
+            borders = []
+            for key, nd in self.Local_View_Map.Nodes.items():
+                nei_key = [key - 1, key + 1, key - env_scale[1], key + env_scale[1]]
+                for j in range(len(nei_key)):
+                    if nei_key[j] not in list(self.Local_View_Map.Nodes.keys()):
+                        borders.append((key, nd.pos_x, nd.pos_y))
+                        break
+            for i in range(len(extended_nids)):
+                nid = extended_nids[i]
+                x = extended_poses[i][0]
+                y = extended_poses[i][1]
+                Nodes[extended_nids[i]] = Point(nid=nid, pos_x=x, pos_y=y)
+                for (bn, px, py) in borders:
+                    Edges[(bn, nid)] = Edge(eid=-1, from_p=bn, to_p=nid, distance=abs(px - x) + abs(py - y))
+                    Edges[(nid, bn)] = Edge(eid=-1, from_p=bn, to_p=nid, distance=abs(px - x) + abs(py - y))
+        else:
+            Nodes = self.Local_View_Map.Nodes
+            Edges = self.Local_View_Map.Edges
+
+        if tid != 1:
+            # danger district也是尽量不可经过的,除非完全堵住了才可以冒险,距离设置为width*height
+            # danger <-> safe width*height
+            # danger <-> danger width*height
+            # danger <-> block INF
+            for key, edge in Edges.items():
+                if (Nodes[edge.from_p].danger_level == 1 and not Nodes[edge.to_p].blocked) \
+                        or (Nodes[edge.to_p].danger_level == 1 and not Nodes[edge.from_p].blocked):
+                    edge.distance = env_scale[0] * env_scale[1]
+
+        nodes_index = set(set(range(len(Nodes))))
 
         while nodes_index and h:
             current_weight, min_node = heapq.heappop(h)
@@ -808,7 +1344,7 @@ class UAV:
                 break
             nodes_index.remove(min_node)
 
-            for key, edge in self.Local_View_Map.Edges.items():
+            for key, edge in Edges.items():
                 if edge.from_p == min_node:
                     weight = current_weight + edge.distance
                     if edge.to_p not in visited or weight < visited[edge.to_p]:
@@ -845,16 +1381,6 @@ class UAV:
                                                                       'WHERE start_time IS NOT NULL '
                                                                       'AND responsible_fleet_id = {} '.format(
                                                                           self.FID)])
-                    # print('\n\n\n')
-                    # print("is work done check!")
-                    # print(len(get_data))  # 1
-                    # print(len(get_data[0]))  # 2
-                    # print(len(get_data[0][1]))  # fleet负责的任务数
-                    # print(returned)
-                    # print(get_data)
-                    # print('\n\n\n')
-
-                    # print(get_data)
                     if len(get_data[0][1]) > 0:  # 有任务
                         end_time = get_data[0][1][0][0]
                         if end_time is not None:
@@ -884,6 +1410,24 @@ class UAV:
                 except Exception as e:
                     print(e)
                     ct += 1
+        elif tid == 2:
+            while ct < 3:
+                try:
+                    get_data, _ = self.connect_with_center(RoW='R', GoL='G',
+                                                           SQLs=['SELECT end_time FROM public.delivery_task '
+                                                                 'WHERE start_time IS NOT NULL '
+                                                                 'AND responsible_fleet_id = {} '.format(self.FID)])
+                    if len(get_data[0][1]) > 0:
+                        end_time = get_data[0][1][0][0]
+                        if end_time is not None:
+                            return True
+                        else:
+                            return False
+                    else:
+                        return True
+                except Exception as e:
+                    print(e)
+                    ct += 1
 
 
 class Cgrid(tk.Tk, object):
@@ -891,6 +1435,7 @@ class Cgrid(tk.Tk, object):
     def __init__(self, env, agents_info, agents_view):
         super(Cgrid, self).__init__()
         self.staticInfo = StaticInfo()
+        self.exp_Info = ExperimentConfig()
         self.action_space = [(0, 1, 1), (0, -1, 1), (-1, 0, 1), (1, 0, 1), (0, 0, 1), (0, 0, 0)]
         self.n_actions = len(self.action_space)
         self.title('Concrete Environment')
@@ -899,6 +1444,7 @@ class Cgrid(tk.Tk, object):
         self.map_h = env.height
         self.agents_loc = agents_info[0]
         self.agents_e = agents_info[1]
+        self.agents_f = agents_info[2]
         self.agents_view = agents_view
         self.geometry('{0}x{1}'.format(self.map_w * self.staticInfo.UNIT, self.map_h * self.staticInfo.UNIT))
         self._build_cgrid()
@@ -920,20 +1466,26 @@ class Cgrid(tk.Tk, object):
         for x in range(0, self.map_w * self.staticInfo.UNIT, self.staticInfo.UNIT):
             self.grid_block.append([])
             self.grid_mark.append([])
-            for y in range(self.map_h * self.staticInfo.UNIT, 0,  -self.staticInfo.UNIT):
-                colorval = "#%02x%02x%02x" % (34,139,34)
+            for y in range(self.map_h * self.staticInfo.UNIT, 0, -self.staticInfo.UNIT):
+                i = len(self.grid_block) - 1
+                j = len(self.grid_block[i])
+                if self.env.Nodes[i][j].danger_level == 1:
+                    colorval = "#%02x%02x%02x" % (255, 215, 0)
+                else:
+                    colorval = "#%02x%02x%02x" % (34, 139, 34)
                 block = self.canvas.create_rectangle((x, y, x + self.staticInfo.UNIT, y - self.staticInfo.UNIT),
                                                      fill=colorval, outline='gray', disabledfill='gray')
                 self.grid_block[len(self.grid_block) - 1].append(block)
-                mark = self.canvas.create_oval((x+self.staticInfo.UNIT/2-self.staticInfo.UNIT/32,
-                                                      y-self.staticInfo.UNIT/2-self.staticInfo.UNIT/32,
-                                                      x + self.staticInfo.UNIT / 2 + self.staticInfo.UNIT / 32,
-                                                      y - self.staticInfo.UNIT / 2 + self.staticInfo.UNIT / 32),
-                                                      fill=colorval, outline=colorval, disabledfill='gray', disabledoutline = 'gray')
+                mark = self.canvas.create_oval((x + self.staticInfo.UNIT / 2 - self.staticInfo.UNIT / 32,
+                                                y - self.staticInfo.UNIT / 2 - self.staticInfo.UNIT / 32,
+                                                x + self.staticInfo.UNIT / 2 + self.staticInfo.UNIT / 32,
+                                                y - self.staticInfo.UNIT / 2 + self.staticInfo.UNIT / 32),
+                                               fill=colorval, outline=colorval, disabledfill='gray',
+                                               disabledoutline='gray')
                 self.grid_mark[len(self.grid_mark) - 1].append(mark)
 
         # create origin(原点)
-        origin = np.array([self.staticInfo.UNIT / 2, self.staticInfo.UNIT * self.map_h-self.staticInfo.UNIT / 2])
+        origin = np.array([self.staticInfo.UNIT / 2, self.staticInfo.UNIT * self.map_h - self.staticInfo.UNIT / 2])
 
         # create ordinary nodes, obstacle and charging station in env
         self.stats = []
@@ -949,7 +1501,7 @@ class Cgrid(tk.Tk, object):
                     p3 = stat_center + np.array([self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
                     stat = self.canvas.create_polygon(
                         (p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]),
-                        fill='blue', disabledfill='gray')
+                        fill='black', disabledfill='gray')
                     self.stats.append({'pos': (i, j), 'stat': stat})
                 elif self.env.Nodes[i][j].blocked:
                     # obstacle
@@ -964,30 +1516,37 @@ class Cgrid(tk.Tk, object):
                     # line2 = self.canvas.create_line((p2[0], p2[1], p3[0], p3[1]), fill='red', disabledfill='black')
                     # self.obs.append({'pos': (i, j), 'l1': line1, 'l2': line2})
                 else:
-                    # ordinary node
+                    # ordinary safe/dangerous node
                     n_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * (-j)])
                     p1 = n_center + np.array([-self.staticInfo.UNIT / 2, self.staticInfo.UNIT / 2])
                     p2 = n_center + np.array([-self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
-                    if self.env.Nodes[i][j].need_rescue:
+                    if self.env.Nodes[i][j].need_rescue or self.env.Nodes[i][j].victims_num > self.exp_Info.S_max:
                         fill = 'red'
                     else:
                         fill = 'black'
                     block = self.canvas.create_rectangle((p1[0], p1[1], p2[0], p2[1]), fill='white',
                                                          disabledfill='gray', disabledoutline='gray')
-                    text = self.canvas.create_text((p1[0]+self.staticInfo.UNIT / 8, p1[1]-self.staticInfo.UNIT / 8),
+                    text = self.canvas.create_text((p1[0] + self.staticInfo.UNIT / 8, p1[1] - self.staticInfo.UNIT / 8),
                                                    text='{}'.format(self.env.Nodes[i][j].victims_num),
                                                    fill=fill, disabledfill='gray')
                     self.vbs.append({'pos': (i, j), 'block': block, 'num': text})
+
         self.agents = []
 
         # create agents
         for i in range(len(self.agents_loc)):
             agent_center = origin + np.array([self.staticInfo.UNIT * self.agents_loc[i][0],
-                                             -self.staticInfo.UNIT * self.agents_loc[i][1]])
+                                              -self.staticInfo.UNIT * self.agents_loc[i][1]])
+            if self.agents_f[i] == 0:
+                fill = 'white'
+            elif self.agents_f[i] == 1:
+                fill = 'blue'
+            else:
+                fill = 'purple'
             agent = self.canvas.create_oval(
                 (agent_center[0] - self.staticInfo.UNIT / 4, agent_center[1] - self.staticInfo.UNIT / 4,
                  agent_center[0] + self.staticInfo.UNIT / 4, agent_center[1] + self.staticInfo.UNIT / 4),
-                fill='white'
+                fill=fill
             )
 
             fill = ''
@@ -1009,7 +1568,8 @@ class Cgrid(tk.Tk, object):
         for i in range(self.map_w):
             for j in range(self.map_h):
                 for a in range(len(self.agents)):
-                    if math.pow(self.agents_loc[a][0]-i,2) + math.pow(self.agents_loc[a][1]-j,2)<= math.pow(self.agents_view[a],2):
+                    if math.pow(self.agents_loc[a][0] - i, 2) + math.pow(self.agents_loc[a][1] - j, 2) <= math.pow(
+                            self.agents_view[a], 2):
                         self.canvas.itemconfig(self.grid_block[i][j], state='normal')
                         self.canvas.itemconfig(self.grid_mark[i][j], state='normal')
                         break
@@ -1019,7 +1579,6 @@ class Cgrid(tk.Tk, object):
 
         for each in self.vbs:
             re = self.canvas.itemcget(self.grid_block[each['pos'][0]][each['pos'][1]], 'state')
-
             if re == 'disabled':
                 self.canvas.itemconfig(each['block'], state='disabled')
                 self.canvas.itemconfig(each['num'], state='disabled')
@@ -1036,18 +1595,19 @@ class Cgrid(tk.Tk, object):
         # pack all
         self.canvas.pack()
 
-    def step(self, new_locs, new_e, new_sr):
+    def step(self, new_env, new_locs, new_e, new_sr):
         s = []
-        s_ =[]
+        s_ = []
         for i, ag in enumerate(self.agents):
-            x0,y0,x1,y1 = self.canvas.bbox(ag['circle'])
-            coor = [(x0+x1)/2,(y0+y1)/2]
-            s.append([math.floor(int(coor[0])/int(self.staticInfo.UNIT)), math.floor((self.map_h*self.staticInfo.UNIT-int(coor[1]))/self.staticInfo.UNIT)])
+            x0, y0, x1, y1 = self.canvas.bbox(ag['circle'])
+            coor = [(x0 + x1) / 2, (y0 + y1) / 2]
+            s.append([math.floor(int(coor[0]) / int(self.staticInfo.UNIT)),
+                      math.floor((self.map_h * self.staticInfo.UNIT - int(coor[1])) / self.staticInfo.UNIT)])
             self.canvas.itemconfig(self.grid_mark[s[i][0]][s[i][1]], state='normal', fill='red')
-            base_action = np.array([(new_locs[i][0]-s[i][0]) * self.staticInfo.UNIT,
-                                    -(new_locs[i][1]-s[i][1])*self.staticInfo.UNIT])
+            base_action = np.array([(new_locs[i][0] - s[i][0]) * self.staticInfo.UNIT,
+                                    -(new_locs[i][1] - s[i][1]) * self.staticInfo.UNIT])
             self.canvas.move(ag['circle'], base_action[0], base_action[1])  # move agent circle
-            self.canvas.move(ag['light'], base_action[0],base_action[1])
+            self.canvas.move(ag['light'], base_action[0], base_action[1])
             if new_e[i] == 0:
                 fill = 'green'
             elif new_e[i] == 1:
@@ -1055,12 +1615,14 @@ class Cgrid(tk.Tk, object):
             else:
                 fill = 'red'
             self.canvas.itemconfig(ag['light'], fill=fill)
-            for r in range(int(max(0,new_locs[i][0]-new_sr[i])),int(min(self.map_w,new_locs[i][0]+new_sr[i]+1))):
-                for c in range(int(max(0,new_locs[i][1]-new_sr[i])),int(min(self.map_h,new_locs[i][1]+new_sr[1]+1))):
-                    if math.pow(r-new_locs[i][0],2)+math.pow(c-new_locs[i][1],2)<= new_sr[i]*new_sr[i]:
-                        if self.canvas.itemcget(self.grid_block[r][c],'state') == 'disabled':
-                            self.canvas.itemconfig(self.grid_block[r][c],state='normal')
-                            self.canvas.itemconfig(self.grid_mark[r][c],state='normal')
+            for r in range(int(max(0, new_locs[i][0] - new_sr[i])),
+                           int(min(self.map_w, new_locs[i][0] + new_sr[i] + 1))):
+                for c in range(int(max(0, new_locs[i][1] - new_sr[i])),
+                               int(min(self.map_h, new_locs[i][1] + new_sr[i] + 1))):
+                    if math.pow(r - new_locs[i][0], 2) + math.pow(c - new_locs[i][1], 2) <= new_sr[i] * new_sr[i]:
+                        if self.canvas.itemcget(self.grid_block[r][c], 'state') == 'disabled':
+                            self.canvas.itemconfig(self.grid_block[r][c], state='normal')
+                            self.canvas.itemconfig(self.grid_mark[r][c], state='normal')
 
             for each in self.vbs:
                 re = self.canvas.itemcget(self.grid_block[each['pos'][0]][each['pos'][1]], 'state')
@@ -1078,7 +1640,15 @@ class Cgrid(tk.Tk, object):
             #     if re == 'normal':
             #         self.canvas.itemconfig(each['l1'], state='normal')
             #         self.canvas.itemconfig(each['l2'], state='normal')
-            s_.append([new_locs[i][0],new_locs[i][1]])
+            s_.append([new_locs[i][0], new_locs[i][1]])
+
+        for each in self.vbs:
+            re = new_env.Nodes[each['pos'][0]][each['pos'][1]]
+            if re.need_rescue or re.victims_num > self.exp_Info.S_max:
+                fill = 'red'
+            else:
+                fill = 'black'
+            self.canvas.itemconfig(each['num'], fill=fill)
         return s_
 
     def reset(self):
@@ -1091,7 +1661,7 @@ class Cgrid(tk.Tk, object):
         # re-create agents
         for i in range(len(self.agents_loc)):
             agent_center = origin + np.array([self.staticInfo.UNIT * self.agents_loc[i][0],
-                                             self.staticInfo.UNIT * self.agents_loc[i][1]])
+                                              self.staticInfo.UNIT * self.agents_loc[i][1]])
             agent = self.canvas.create_oval(
                 (agent_center[0] - self.staticInfo.UNIT / 4, agent_center[1] + self.staticInfo.UNIT / 4,
                  agent_center[0] + self.staticInfo.UNIT / 4, agent_center[1] - self.staticInfo.UNIT / 4),
@@ -1154,6 +1724,7 @@ class Cgrid(tk.Tk, object):
     #     time.sleep(0.1)
     #     self.update(new_locs,new_e,new_sr)
 
+
 # def update(new_locs,new_e,new_sr):
 # #     while True:
 # #         if new_locs is None:
@@ -1162,18 +1733,30 @@ class Cgrid(tk.Tk, object):
 # #         s_ = env.step(new_locs,new_e,new_sr)
 
 
-
 if __name__ == '__main__':
 
     qtool = QueryTool(database='multiAgents')
     col_nms_1, rows_1 = qtool.get_view(view_name='drones_cur_state')
     col_nms_2, rows_2 = qtool.get_view(view_name='charging_stations_config')
+    col_nms_3, rows_3 = qtool.sql_execute(query="SELECT * FROM public.drones_cur_state,public.drones_config "
+                                                "WHERE drones_config.uav_id = drones_cur_state.uav_id "
+                                                "AND drones_config.fleet_id = 0")
+    col_nms_4, rows_4 = qtool.sql_execute(query="SELECT * FROM public.drones_cur_state,public.drones_config "
+                                                "WHERE drones_config.uav_id = drones_cur_state.uav_id "
+                                                "AND drones_config.fleet_id = 1")
+    col_nms_5, rows_5 = qtool.sql_execute(query="SELECT * FROM public.drones_cur_state,public.drones_config "
+                                                "WHERE drones_config.uav_id = drones_cur_state.uav_id "
+                                                "AND drones_config.fleet_id = 2")
     qtool.clear_db_connection()
 
     drone_num = len(rows_1)
-    drone_locs = {}
-    for row in rows_1:
-        drone_locs[row[col_nms_1.index('uav_id')]] = row[col_nms_1.index('loc_node_id')]
+    drone_locs = [{}, {}, {}]
+    for row in rows_3:
+        drone_locs[0][row[col_nms_3.index('uav_id')]] = row[col_nms_3.index('loc_node_id')]
+    for row in rows_4:
+        drone_locs[1][row[col_nms_4.index('uav_id')]] = row[col_nms_4.index('loc_node_id')]
+    for row in rows_5:
+        drone_locs[2][row[col_nms_5.index('uav_id')]] = row[col_nms_5.index('loc_node_id')]
     charge_list = []
     for row in rows_2:
         charge_list.append(row[col_nms_2.index('node_id')])
@@ -1194,8 +1777,10 @@ if __name__ == '__main__':
     cur_pos = []
     cur_e = []
     cur_sr = []
+    cur_f = []
     for i in range(drone_num):
         cur_pos.append([fleet[i].cur_PX, fleet[i].cur_PY])
+        cur_f.append(fleet[i].FID)
         if fleet[i].cur_E >= fleet[i].E * (1 - fleet[i].experiment_config.W_Threshold):
             new_e = 0
         elif fleet[i].E * (1 - fleet[i].experiment_config.C_Threshold) <= fleet[i].cur_E < fleet[i].E * (
@@ -1205,7 +1790,7 @@ if __name__ == '__main__':
             new_e = 2
         cur_e.append(new_e)
         cur_sr.append(fleet[i].SR)
-    env_window = Cgrid(env= env,agents_info=(cur_pos,cur_e),agents_view=cur_sr)
+    env_window = Cgrid(env=env, agents_info=(cur_pos, cur_e, cur_f), agents_view=cur_sr)
     # env_window.mainloop()
 
     while True:
@@ -1215,22 +1800,22 @@ if __name__ == '__main__':
         for i in range(drone_num):
             cur_pos.append([fleet[i].cur_PX, fleet[i].cur_PY])
             new_e = -1
-            if fleet[i].cur_E >= fleet[i].E *(1-fleet[i].experiment_config.W_Threshold):
+            if fleet[i].cur_E >= fleet[i].E * (1 - fleet[i].experiment_config.W_Threshold):
                 new_e = 0
-            elif fleet[i].E *(1-fleet[i].experiment_config.C_Threshold) <= fleet[i].cur_E < fleet[i].E *(1-fleet[i].experiment_config.W_Threshold):
+            elif fleet[i].E * (1 - fleet[i].experiment_config.C_Threshold) <= fleet[i].cur_E < fleet[i].E * (
+                    1 - fleet[i].experiment_config.W_Threshold):
                 new_e = 1
             else:
                 new_e = 2
             cur_e.append(new_e)
             cur_sr.append(fleet[i].SR)
-        s_ = env_window.step(cur_pos, cur_e, cur_sr)
+        s_ = env_window.step(env, cur_pos, cur_e, cur_sr)
         env_window.update_idletasks()
         env_window.update()
         time.sleep(0.1)
         time_elapse = time.time() - start_time
         if time_elapse > fleet[0].experiment_config.timeout:
             break
-
 
     # time.sleep(600)
 
@@ -1239,4 +1824,3 @@ if __name__ == '__main__':
         fleet_thread[i].join()
 
     print("Drones' activities end!")
-

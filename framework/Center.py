@@ -58,6 +58,7 @@ class Center:
         self.response_data = {}
         self.query_tool.cur.execute("TRUNCATE TABLE public.cur_processes")
         self.start_time = None
+        self.cpt = ComputationUnit()
 
     def terminate(self):
         # 可以将未处理的请求用文件的形式暂存下来
@@ -297,12 +298,25 @@ class Center:
                     print("Process get response lock for request ", uuid)
 
                     self.response_data[uuid] = {}
-                    index_.append((i, uuid))
+                    index_.append(i)
                     # 对每一条request,获取其对应的数据，或者更新相应的数据
                     # 这里比较关键的问题是处理需要并行读取的情况,怎么全部读取，然后分发，然后一起更新cur_processes
                     if self.request_queue[i]['RoW'] == 'R':
-                        merge_list.append(uuid)
-                        i_list.append(i)
+                        if 'Compute' in list(self.request_queue[i].keys()) and self.request_queue[i]['Compute']:
+                            self.response_data[uuid]['data'] = None
+                            if self.request_queue[i]['GoL'] == 'G':
+                                if self.request_queue[i]['Func'] == 'Dijkstra':
+                                    grids=self.cpt.get_global_env_model(qt=self.query_tool)
+                                    min_cost, path = self.cpt.dijkstra(Nodes=grids['nodes'],
+                                                      Edges=grids['edges'],
+                                                      src=self.request_queue[i]['loc_node_id'])
+                                    self.response_data[uuid]['data'] = [min_cost, path]
+                                    self.response_data[uuid]['data_ready'] = True
+                                    self.resp_conditions[uuid].notify()
+                                    self.resp_conditions[uuid].release()
+                        else:
+                            merge_list.append(uuid)
+                            i_list.append(i)
                     else:
                         self.response_data[uuid]['data'] = None
                         if self.request_queue[i]['GoL'] == 'G':
@@ -378,7 +392,7 @@ class Center:
                                                                             new_row['SID']))
                                 elif vi == 4:
                                     # drone_rescue_targets
-                                    for new_row in self.request_queue_queue[i]['view_data_list'][j]:
+                                    for new_row in self.request_queue[i]['view_data_list'][j]:
                                         self.query_tool.cur.execute("UPDATE public.drone_rescue_targets "
                                                                     "SET victims_num={}, load_demand_num={},"
                                                                     "is_completed={} WHERE target_id={}"
@@ -386,12 +400,23 @@ class Center:
                                                                             new_row['LDN'],
                                                                             new_row['IC'],
                                                                             new_row['TID']))
+                                elif vi == 5:
+                                    # drone_delivery_targets
+                                    for new_row in self.request_queue[i]['view_data_list'][j]:
+                                        self.query_tool.cur.execute("UPDATE public.drone_delivery_targets "
+                                                                    "SET load_demand_num={}, is_completed={}"
+                                                                    " WHERE target_id={}".format(new_row['LDN'],
+                                                                                                 new_row['IC'],
+                                                                                                 new_row['TID']))
+                        self.check_targets()
                         j_list.append(uuid)
                 else:
                     break
 
             if len(j_list) > 0:
                 for uuid in j_list:
+                    # print("current uuid:", uuid)
+                    # print("j_list notify and release.")
                     self.response_data[uuid]['data_ready'] = True
                     self.resp_conditions[uuid].notify()
                     self.resp_conditions[uuid].release()
@@ -403,9 +428,11 @@ class Center:
                 self.separate_views_data(i_list)
                 # 如果是读操作，更新self.response_data[req_uuid].data中的数据为要返回的数据
                 for uuid_ in merge_list:
+                    # print("current uuid:", uuid_)
+                    # print("merge_list notify and release.")
                     self.response_data[uuid_]['data_ready'] = True
-                    self.resp_conditions[uuid].notify()
-                    self.resp_conditions[uuid].release()
+                    self.resp_conditions[uuid_].notify()
+                    self.resp_conditions[uuid_].release()
                     # print('here 0.')
                 # for uuid_ in merge_list:
                 #     while ('data_sent' not in self.response_data[uuid_].keys()) or (not self.response_data[uuid_]['data_sent']):
@@ -427,9 +454,12 @@ class Center:
             # TODO
             time.sleep(1)
 
-            for (i_, uuid_) in index_:
+            for i_ in reversed(index_):
                 # self.response_data[uuid_].clear()
                 # self.response_data.pop(uuid_)
+                # print(len(self.request_queue))
+                # print("index_ i_",i_)
+                # print("uuid",uuid)
                 del_ = self.request_queue.pop(i_)
                 self.query_tool.cur.execute(
                     "DELETE FROM public.cur_processes WHERE req_uuid = '{}'".format(del_['uuid']))
@@ -514,6 +544,15 @@ class Center:
                         # drone_rescue_targets
                         self.query_tool.cur.execute("SELECT * FROM public.drone_rescue_targets WHERE uav_id={}"
                                                     .format(req['uav_id']))
+                    elif vi == 5:
+                        # drone_delivery_targets
+                        self.query_tool.cur.execute("SELECT * FROM public.drone_delivery_targets WHERE uav_id={}"
+                                                    .format(req['uav_id']))
+                    elif vi == 6:
+                        # drone_local_neighbors
+                        self.query_tool.cur.execute("SELECT * FROM public.drone_local_neighbors WHERE uav_id={}"
+                                                    .format(req['uav_id']))
+
                     r_rows = self.query_tool.cur.fetchall()
                     colnames = [desc[0] for desc in self.query_tool.cur.description]
                     data[len(data) - 1].append(colnames)
@@ -590,7 +629,7 @@ class Center:
                 if iscompleted:
                     self.query_tool.cur.execute(
                         "UPDATE public.search_coverage_task "
-                        "SET end_coverage_ratio={},end_time={} "
+                        "SET end_coverage_ratio={},end_time='{}' "
                         "WHERE area_id={} and responsible_fleet_id={}".format(
                             coverage_ratio, timestamp, aid, fid))
             # check rescue_support task state
@@ -600,11 +639,24 @@ class Center:
 
             # 对每一个有任务的area,检查area区域内符合条件的任务点,新的任务点插入rescue_support_task_targets,
             # 以及rescue_support_cur_state,并更新rescue_support_task的target_num
-
             # 如果可以的话，对于rescue_support_cur_state中未分配给无人机的任务点进行任务分配
 
             # 统计rescue_support_cur_state中已分配出去的target的完成情况,如果is_completed=True,则更新相应target在
             # rescue_support_task_targets表中的over_time.
+            _, rows = self.query_tool.sql_execute("SELECT target_id,cur_timestamp FROM public.rescue_support_cur_state "
+                                                  "WHERE is_allocated=True and is_completed=True")
+            for row in rows:
+                tar_id = row[0]
+                timestamp = row[1]
+                self.query_tool.sql_execute("UPDATE public.rescue_support_task_targets "
+                                            "SET over_time ='{}' "
+                                            "WHERE target_id={}".format(timestamp, tar_id))
+            complete_count = len(rows)
+            _, r = self.query_tool.sql_execute("SELECT targets_num FROM public.rescue_support_task "
+                                               "WHERE area_id=0")
+            if complete_count == r[0][0]:
+                self.query_tool.sql_execute("UPDATE public.rescue_support_task "
+                                            "SET end_time='{}', end_completed_ratio={}".format(timestamp, 1))
 
             # 如果同area下任务0已结束,则任务1的任务数不会再增长,这种情况下如果所有的target都有overtime了,
             # 更新rescue_support_task的end_time以及end_completed_ratio
@@ -618,6 +670,108 @@ class Center:
 
             time.sleep(self.experiment_config.center_check_interval)
 
+    def check_targets(self):
+        # 检查符合条件的rescue_targets
+        col_names, re_tars = self.query_tool.sql_execute("SELECT * FROM public.grid_nodes "
+                                                         "WHERE need_rescue=TRUE or (victims_num>0 and node_type=3)")
+        _, cur_tars = self.query_tool.sql_execute("SELECT target_id FROM public.rescue_support_task_targets")
+
+        n_tars = []
+        for row in re_tars:
+            tar_id = row[col_names.index('node_id')]
+            n_tars.append(tar_id)
+            victims_num = row[col_names.index('victims_num')]
+            load_demand_num = 0
+            is_allocated = True
+            is_completed = False
+            responsible_uav_id = 2
+            cur_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+            _, re = self.query_tool.sql_execute("SELECT * FROM public.rescue_support_task_targets "
+                                                "WHERE target_id = {}".format(tar_id))
+            if len(re) == 0:
+                # 更新rescue_support_task中的targets_num
+                self.query_tool.cur.execute("UPDATE public.rescue_support_task "
+                                            "SET targets_num=targets_num+1 "
+                                            "WHERE area_id = 0")
+                # 更新rescue_support_targets表中的记录
+                self.query_tool.cur.execute("INSERT INTO "
+                                            "public.rescue_support_task_targets(area_id, target_id, find_time, over_time)"
+                                            "VALUES (0, {}, '{}', null)".format(tar_id, cur_timestamp))
+                # 更新rescue_support_cur_state表中的记录
+                self.query_tool.cur.execute("INSERT INTO "
+                                            "public.rescue_support_cur_state "
+                                            "VALUES(0,{},{},{},{},{},{},'{}')".format(
+                    tar_id, victims_num, load_demand_num, is_allocated, is_completed, responsible_uav_id, cur_timestamp
+                ))
+        for row in cur_tars:
+            if row[0] not in n_tars:
+                victims_num = 0
+                load_demand_num = 0
+                cur_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+                # 在环境不会自己变化的时候,这种情况只发生在任务完成时,改变了rescue位置的victims_number或者need_rescue状态
+                # # 更新rescue_support_task中的targets_num
+                # self.query_tool.sql_execute("UPDATE public.rescue_support_task "
+                #                             "SET targets_num=targets_num-1"
+                #                             "WHERE area_id = 0")
+                # 更新rescue_support_targets表中的记录
+                self.query_tool.cur.execute("UPDATE public.rescue_support_task_targets "
+                                            "SET over_time='{}'"
+                                            "WHERE target_id ={}".format(cur_timestamp, row[0]))
+                # 更新rescue_support_cur_state表中的记录
+                self.query_tool.cur.execute("UPDATE public.rescue_support_cur_state "
+                                            "SET victims_num={},load_demand_num={},is_completed=true, cur_timestamp='{}' "
+                                            "WHERE target_id={} and area_id=0"
+                    .format(
+                    victims_num, load_demand_num, cur_timestamp, row[0]
+                ))
+
+        # 检查符合条件的delivery_targets
+        col_names, re_tars = self.query_tool.sql_execute("SELECT * FROM public.grid_nodes "
+                                                         "WHERE victims_num>{}".format(self.experiment_config.S_max))
+        _, cur_tars = self.query_tool.sql_execute("SELECT target_id FROM public.delivery_task_targets")
+
+        n_tars = []
+        for row in re_tars:
+            tar_id = row[col_names.index('node_id')]
+            n_tars.append(tar_id)
+            load_demand_num = 1
+            is_allocated = True
+            is_completed = False
+            responsible_uav_id = 3
+            cur_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+            _, re = self.query_tool.sql_execute("SELECT * FROM public.delivery_task_targets "
+                                                "WHERE target_id = {}".format(tar_id))
+            if len(re) == 0:
+                # 更新rescue_support_task中的targets_num
+                self.query_tool.cur.execute("UPDATE public.delivery_task "
+                                            "SET targets_num=targets_num+1"
+                                            " WHERE area_id = 0")
+                # 更新rescue_support_targets表中的记录
+                self.query_tool.cur.execute("INSERT INTO "
+                                            "public.delivery_task_targets(area_id, target_id, find_time, over_time)"
+                                            "VALUES (0, {}, '{}', null)".format(tar_id, cur_timestamp))
+                # 更新rescue_support_cur_state表中的记录
+                self.query_tool.cur.execute("INSERT INTO public.delivery_cur_state"
+                                            " VALUES(0,{},{},{},{},{},'{}')".format(
+                    tar_id, load_demand_num, is_allocated, is_completed, responsible_uav_id, cur_timestamp
+                ))
+        for row in cur_tars:
+            if row[0] not in n_tars:
+                load_demand_num = 1
+                cur_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+                # 在环境不会自己变化的时候,这种情况不会发生
+                # 更新delivery_task中的targets_num
+                self.query_tool.cur.execute("UPDATE public.delivery_task "
+                                            "SET targets_num=targets_num-1"
+                                            " WHERE area_id = 0")
+                # 更新rescue_support_targets表中的记录
+                self.query_tool.cur.execute("DELETE FROM public.delivery_task_targets "
+                                            "WHERE target_id ={} and area_id=0".format(row[0]))
+                # 更新rescue_support_cur_state表中的记录
+                self.query_tool.cur.execute("DELETE FROM public.delivery_cur_state "
+                                            "WHERE target_id={} and area_id=0"
+                                            .format(row[0]))
+
     # # 如center与agent处于平等交互地位，即center不仅仅是被动接收agent的请求，同时可以主动建立请求，则需要再建立相应的新的连接
     # def create_request_connection(self):
     #
@@ -628,11 +782,79 @@ class Center:
         self.connect_with_agents()
 
 
+class ComputationUnit:
+
+    def __init__(self):
+        pass
+
+    def get_global_env_model(self, qt):
+        qt.cur.execute("SELECT * FROM public.nodes_config ORDER BY node_id ASC")
+        loc_rows = qt.cur.fetchall()
+        loc_col_names = [desc[0] for desc in qt.cur.description]
+        qt.cur.execute("SELECT * FROM public.grid_nodes ORDER BY node_id ASC")
+        info_rows = qt.cur.fetchall()
+        info_col_names = [desc[0] for desc in qt.cur.description]
+        grids = {}
+        grids['nodes'] = {}
+        for i in range(len(loc_rows)):
+            x = int(loc_rows[i][loc_col_names.index('pos_x')])
+            y = int(loc_rows[i][loc_col_names.index('pos_y')])
+            id = int(loc_rows[i][loc_col_names.index('node_id')])
+            node_type = int(info_rows[id][info_col_names.index('node_type')])
+            visited = bool(info_rows[id][info_col_names.index('visited')])
+            victims_num = int(info_rows[id][info_col_names.index('victims_num')])
+            need_rescue = bool(info_rows[id][info_col_names.index('need_rescue')])
+            grids['nodes'][id] = Point(nid=id, pos_x=x, pos_y=y, node_type=node_type, victims_num=victims_num,
+                                       need_rescue=need_rescue, visited=visited)
+        qt.cur.execute("SELECT * FROM public.grid_edges ORDER BY edge_id ASC")
+        edge_rows = qt.cur.fetchall()
+        edge_col_names = [desc[0] for desc in qt.cur.description]
+        grids['edges'] = {}
+        for j in range(len(edge_rows)):
+            from_p = int(edge_rows[j][edge_col_names.index('from_id')])
+            to_p = int(edge_rows[j][edge_col_names.index('to_id')])
+            eid = int(edge_rows[j][edge_col_names.index('edge_id')])
+            dis = int(edge_rows[j][edge_col_names.index('distance')])
+            if (grids['nodes'][from_p].danger_level == 1 and not grids['nodes'][to_p].blocked) \
+                    or (grids['nodes'][to_p].danger_level == 1 and not grids['nodes'][from_p].blocked):
+                dis = len(grids['nodes'])
+            grids['edges']['' + from_p + '_' + to_p] = Edge(eid=eid, from_p=from_p, to_p=to_p, distance=dis)
+        return grids
+
+    def dijkstra(self, Nodes, Edges, src):
+        visited = {src: 0}  # 包含所有已添加的点,并且key-value对表示key对应的点到initial点(即self.cur_NID)的最小距离
+        h = [(0, src)]
+        path = {}  # path[v]=a,代表到达v之前的一个点是a,需要回溯得到整个路径
+
+        nodes_index = set(set(range(len(Nodes))))
+
+        while nodes_index and h:
+            current_weight, min_node = heapq.heappop(h)
+            try:
+                while min_node not in nodes_index:
+                    current_weight, min_node = heapq.heappop(h)
+            except IndexError:
+                break
+            nodes_index.remove(min_node)
+
+            for key, edge in Edges.items():
+                if edge.from_p == min_node:
+                    weight = current_weight + edge.distance
+                    if edge.to_p not in visited or weight < visited[edge.to_p]:
+                        visited[edge.to_p] = weight
+                        heapq.heappush(h, (weight, edge.to_p))
+                        path[edge.to_p] = min_node
+                else:
+                    continue
+        return visited, path
+
+
 class Ggrid(tk.Tk, object):
 
     def __init__(self, grids, agents_info):
         super(Ggrid, self).__init__()
         self.staticInfo = StaticInfo()
+        self.exp_Info = ExperimentConfig()
         self.action_space = [(0, 1, 1), (0, -1, 1), (-1, 0, 1), (1, 0, 1), (0, 0, 1), (0, 0, 0)]
         self.n_actions = len(self.action_space)
         self.title('Global Environment Model')
@@ -641,6 +863,7 @@ class Ggrid(tk.Tk, object):
         self.map_h = grids['height']
         self.agents_loc = agents_info[0]
         self.agents_e = agents_info[1]
+        self.agents_f = agents_info[2]
         self.geometry('{0}x{1}'.format(self.map_w * self.staticInfo.UNIT, self.map_h * self.staticInfo.UNIT))
         self._build_ggrid()
 
@@ -662,11 +885,16 @@ class Ggrid(tk.Tk, object):
             self.grid_block.append([])
             self.grid_mark.append([])
             for y in range(self.map_h * self.staticInfo.UNIT, 0, -self.staticInfo.UNIT):
-                colorval = "#%02x%02x%02x" % (34, 139, 34)
+                i = len(self.grid_block) - 1
+                j = len(self.grid_block[i]) - 1
+                if self.grids['nodes'][i][j].danger_level == 1:
+                    colorval = "#%02x%02x%02x" % (255, 215, 0)
+                else:
+                    colorval = "#%02x%02x%02x" % (34, 139, 34)
                 block = self.canvas.create_rectangle((x, y, x + self.staticInfo.UNIT, y - self.staticInfo.UNIT),
                                                      fill=colorval, outline='gray', disabledfill='gray')
                 self.grid_block[len(self.grid_block) - 1].append(block)
-                if self.grids['nodes'][len(self.grid_block)-1][len(self.grid_block[len(self.grid_block) - 1])-1].visited:
+                if self.grids['nodes'][i][j].visited:
                     mark_fill = 'red'
                 else:
                     mark_fill = colorval
@@ -694,8 +922,8 @@ class Ggrid(tk.Tk, object):
                     p3 = stat_center + np.array([self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
                     stat = self.canvas.create_polygon(
                         (p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]),
-                        fill='blue', disabledfill='gray')
-                    self.stats[(i, j)]= stat
+                        fill='black', disabledfill='gray')
+                    self.stats[(i, j)] = stat
                 elif self.grids['nodes'][i][j].blocked:
                     # obstacle
                     self.canvas.itemconfig(self.grid_block[i][j], fill='black')
@@ -704,7 +932,8 @@ class Ggrid(tk.Tk, object):
                     n_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * (-j)])
                     p1 = n_center + np.array([-self.staticInfo.UNIT / 2, self.staticInfo.UNIT / 2])
                     p2 = n_center + np.array([-self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
-                    if self.grids['nodes'][i][j].need_rescue:
+                    if self.grids['nodes'][i][j].need_rescue or self.grids['nodes'][i][
+                        j].victims_num > self.exp_Info.S_max:
                         fill = 'red'
                     else:
                         fill = 'black'
@@ -713,17 +942,23 @@ class Ggrid(tk.Tk, object):
                     text = self.canvas.create_text((p1[0] + self.staticInfo.UNIT / 8, p1[1] - self.staticInfo.UNIT / 8),
                                                    text='{}'.format(self.grids['nodes'][i][j].victims_num),
                                                    fill=fill, disabledfill='gray')
-                    self.vbs[(i, j)]= {'block': block, 'num': text}
+                    self.vbs[(i, j)] = {'block': block, 'num': text}
 
         self.agents = []
         # create agents
         for i in range(len(self.agents_loc)):
             agent_center = origin + np.array([self.staticInfo.UNIT * self.agents_loc[i][0],
                                               -self.staticInfo.UNIT * self.agents_loc[i][1]])
+            if self.agents_f[i] == 0:
+                fill = 'white'
+            elif self.agents_f[i] == 1:
+                fill = 'blue'
+            else:
+                fill = 'purple'
             agent = self.canvas.create_oval(
                 (agent_center[0] - self.staticInfo.UNIT / 4, agent_center[1] - self.staticInfo.UNIT / 4,
                  agent_center[0] + self.staticInfo.UNIT / 4, agent_center[1] + self.staticInfo.UNIT / 4),
-                fill='white'
+                fill=fill
             )
 
             fill = ''
@@ -750,53 +985,62 @@ class Ggrid(tk.Tk, object):
             for j in range(self.map_h):
                 if new_grids['nodes'][i][j].is_charge_p:
                     # TODO: update charging station, we assume that there are no change of charging station now
-                    if not ((i,j) in self.stats):
+                    if not ((i, j) in self.stats):
                         stat_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * (-j)])
                         p1 = stat_center + np.array([0, -self.staticInfo.UNIT / 4])
                         p2 = stat_center + np.array([-self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
                         p3 = stat_center + np.array([self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
                         new_stat = self.canvas.create_polygon(
                             (p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]),
-                            fill='blue', disabledfill='gray')
+                            fill='black', disabledfill='gray')
                         self.stats[(i, j)] = new_stat
-                        if (i,j) in self.vbs:
-                            self.canvas.delete(self.vbs[(i,j)]['block'])
-                            self.canvas.delete(self.vbs[(i,j)]['num'])
+                        if (i, j) in self.vbs:
+                            self.canvas.delete(self.vbs[(i, j)]['block'])
+                            self.canvas.delete(self.vbs[(i, j)]['num'])
                 elif new_grids['nodes'][i][j].blocked:
                     # obstacle
                     self.canvas.itemconfig(self.grid_block[i][j], fill='black')
                     self.canvas.itemconfig(self.grid_mark[i][j], fill='black', outline='black')
-                    if (i,j) in self.vbs:
+                    if (i, j) in self.vbs:
                         self.canvas.delete(self.vbs[(i, j)]['block'])
                         self.canvas.delete(self.vbs[(i, j)]['num'])
-                    if (i,j) in self.stats:
-                        self.canvas.delete(self.stats[(i,j)])
+                    if (i, j) in self.stats:
+                        self.canvas.delete(self.stats[(i, j)])
                 else:
                     # ordinary node
-                    colorval = "#%02x%02x%02x" % (34, 139, 34)
+                    if new_grids['nodes'][i][j].danger_level == 1:
+                        colorval = "#%02x%02x%02x" % (255, 215, 0)
+                    else:
+                        colorval = "#%02x%02x%02x" % (34, 139, 34)
                     self.canvas.itemconfig(self.grid_block[i][j], fill=colorval)
                     if new_grids['nodes'][i][j].visited:
-                        self.canvas.itemconfig(self.grid_mark[i][j],fill='red')
-                    if (i,j) in self.vbs:
-                        if new_grids['nodes'][i][j].need_rescue:
+                        self.canvas.itemconfig(self.grid_mark[i][j], fill='red')
+                    else:
+                        self.canvas.itemconfig(self.grid_mark[i][j], fill=colorval, outline=colorval)
+                    if (i, j) in self.vbs:
+                        if new_grids['nodes'][i][j].need_rescue or new_grids['nodes'][i][
+                            j].victims_num > self.exp_Info.S_max:
                             fill = 'red'
                         else:
                             fill = 'black'
-                        self.canvas.itemconfig(self.vbs[(i,j)]['num'],text='{}'.format(new_grids['nodes'][i][j].victims_num),
+                        self.canvas.itemconfig(self.vbs[(i, j)]['num'],
+                                               text='{}'.format(new_grids['nodes'][i][j].victims_num),
                                                fill=fill)
                     else:
                         n_center = origin + np.array([self.staticInfo.UNIT * i, self.staticInfo.UNIT * (-j)])
                         p1 = n_center + np.array([-self.staticInfo.UNIT / 2, self.staticInfo.UNIT / 2])
                         p2 = n_center + np.array([-self.staticInfo.UNIT / 4, self.staticInfo.UNIT / 4])
-                        if self.grids['nodes'][i][j].need_rescue:
+                        if self.grids['nodes'][i][j].need_rescue or new_grids['nodes'][i][
+                            j].victims_num > self.exp_Info.S_max:
                             fill = 'red'
                         else:
                             fill = 'black'
                         block = self.canvas.create_rectangle((p1[0], p1[1], p2[0], p2[1]), fill='white',
                                                              disabledfill='gray', disabledoutline='gray')
-                        text = self.canvas.create_text((p1[0] + self.staticInfo.UNIT / 8, p1[1] - self.staticInfo.UNIT / 8),
-                                                       text='{}'.format(self.grids['nodes'][i][j].victims_num),
-                                                       fill=fill, disabledfill='gray')
+                        text = self.canvas.create_text(
+                            (p1[0] + self.staticInfo.UNIT / 8, p1[1] - self.staticInfo.UNIT / 8),
+                            text='{}'.format(self.grids['nodes'][i][j].victims_num),
+                            fill=fill, disabledfill='gray')
                         self.vbs.append({'pos': (i, j), 'block': block, 'num': text})
 
         s = []
@@ -846,13 +1090,14 @@ def get_current_data(qt, width, height, W_, C_):
         victims_num = int(info_rows[id][info_col_names.index('victims_num')])
         need_rescue = bool(info_rows[id][info_col_names.index('need_rescue')])
         grids['nodes'][x][y] = Point(nid=id, pos_x=x, pos_y=y, node_type=node_type, victims_num=victims_num,
-                            need_rescue=need_rescue, visited=visited)
+                                     need_rescue=need_rescue, visited=visited)
 
     qt.cur.execute("SELECT * FROM public.drones_cur_state ORDER BY uav_id ASC")
     drone_infos = qt.cur.fetchall()
     drone_col_names = [desc[0] for desc in qt.cur.description]
     cur_pos = []
     cur_e = []
+    cur_f = []
     for info in drone_infos:
         uid = int(info[drone_col_names.index('uav_id')])
         nid = int(info[drone_col_names.index('loc_node_id')])
@@ -860,8 +1105,10 @@ def get_current_data(qt, width, height, W_, C_):
         y = int(loc_rows[nid][loc_col_names.index('pos_y')])
         cur_pos.append([x, y])
         e = float(info[drone_col_names.index('cur_electricity')])
-        qt.cur.execute("SELECT max_electricity FROM public.drones_config WHERE uav_id={}".format(uid))
-        max_e = float(qt.cur.fetchall()[0][0])
+        qt.cur.execute("SELECT max_electricity,fleet_id FROM public.drones_config WHERE uav_id={}".format(uid))
+        resp = qt.cur.fetchall()
+        max_e = float(resp[0][0])
+        new_f = int(resp[0][1])
         if e >= max_e * (1 - W_):
             new_e = 0
         elif max_e * (1 - C_) <= e < max_e * (1 - W_):
@@ -869,18 +1116,19 @@ def get_current_data(qt, width, height, W_, C_):
         else:
             new_e = 2
         cur_e.append(new_e)
-    return grids, cur_pos, cur_e
+        cur_f.append(new_f)
+    return grids, cur_pos, cur_e, cur_f
 
 
 def render_global_views(width, height, W_, C_, timeout):
     qt = QueryTool(database='multiAgents')
     start_time = time.time()
-    grids, cur_pos, cur_e = get_current_data(qt,width,height, W_, C_)
-    view_window = Ggrid(grids=grids, agents_info=(cur_pos, cur_e))
+    grids, cur_pos, cur_e, cur_f = get_current_data(qt, width, height, W_, C_)
+    view_window = Ggrid(grids=grids, agents_info=(cur_pos, cur_e, cur_f))
 
     while True:
         time.sleep(0.1)
-        new_grids, cur_pos, cur_e = get_current_data(qt,width,height,W_, C_)
+        new_grids, cur_pos, cur_e, _ = get_current_data(qt, width, height, W_, C_)
         s_ = view_window.step(new_grids, cur_pos, cur_e)
         view_window.update_idletasks()
         view_window.update()
@@ -898,12 +1146,14 @@ if __name__ == "__main__":
                                    map_width=metadata['width'],
                                    map_height=metadata['height'],
                                    charge_num=metadata['charge_num'],
+                                   danger_num=metadata['danger_num'],
                                    charge_pos_list=metadata['charge_pos_list'],
                                    obstacle_num=metadata['obstacle_num'],
                                    db_used=True
                                    )
         dg.initNewMapViews()
         dg.initNewAgentViews()
+        dg.initNewTaskViews()
         dg.ClearDBInitializer()
 
     process_thread = Thread(target=center.process_request_in_queue)
