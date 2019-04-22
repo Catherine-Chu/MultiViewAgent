@@ -14,7 +14,7 @@ import numpy as np
 class GlobalDataInitializer:
 
     def __init__(self, agent_num, map_width, map_height, charge_num, danger_num, charge_pos_list, obstacle_num=0,
-                 db_used=True):
+                 db_used=True, view_range=4.0, sense_range=2.0):
         if agent_num:
             self.agent_num = agent_num[0] + agent_num[1]
             self.agent_g_num = agent_num
@@ -23,6 +23,8 @@ class GlobalDataInitializer:
         self.charge_num = charge_num
         self.danger_num = danger_num
         self.charge_pos_list = charge_pos_list
+        self.view_range = view_range
+        self.sense_range = sense_range
         self.static_info = StaticInfo()
         self.expconfig = ExperimentConfig()
         if db_used:
@@ -32,20 +34,35 @@ class GlobalDataInitializer:
         else:
             self.obstacle_num = obstacle_num
 
+    def safe_execute(self, query):
+        try:
+            self.cur.execute(query)
+        except psycopg2.ProgrammingError as exc:
+            print(exc)
+            self.conn.rollback()
+            self.cur = self.conn.cursor()
+            self.cur.execute(query)
+        except psycopg2.InterfaceError as exc:
+            print(exc)
+            self.conn = psycopg2.connect(database='multiAgents', user='chuwenjie', password='2399321cwj',
+                                         host='127.0.0.1', port='5432')
+            self.cur = self.conn.cursor()
+            self.cur.execute(query)
+
     def initNewMapViews(self):
-        self.cur.execute("TRUNCATE TABLE areas")
-        self.cur.execute("TRUNCATE TABLE nodes_config")
-        self.cur.execute("TRUNCATE TABLE grid_edges")
-        self.cur.execute("TRUNCATE TABLE grid_nodes")
-        self.cur.execute("TRUNCATE TABLE charging_stations_config")
-        self.cur.execute("TRUNCATE TABLE charging_stations_cur_state")
+        self.safe_execute("TRUNCATE TABLE areas")
+        self.safe_execute("TRUNCATE TABLE nodes_config")
+        self.safe_execute("TRUNCATE TABLE grid_edges")
+        self.safe_execute("TRUNCATE TABLE grid_nodes")
+        self.safe_execute("TRUNCATE TABLE charging_stations_config")
+        self.safe_execute("TRUNCATE TABLE charging_stations_cur_state")
         area_id = 0
         area_lefttop = self.map_height - 1
         area_leftdown = 0
         area_righttop = self.map_height * self.map_width - 1
         area_rightdown = (self.map_width - 1) * self.map_height
         area_size = self.map_width * self.map_height
-        self.cur.execute("INSERT INTO areas VALUES({},{},{},{},{},{})"
+        self.safe_execute("INSERT INTO areas VALUES({},{},{},{},{},{})"
                          .format(area_id, area_lefttop, area_leftdown,
                                  area_righttop, area_rightdown,
                                  area_size))
@@ -64,9 +81,9 @@ class GlobalDataInitializer:
                     visited = True
                 else:
                     node_type = 0  # normal points
-                self.cur.execute("INSERT INTO nodes_config VALUES({},{},{},{})"
+                self.safe_execute("INSERT INTO nodes_config VALUES({},{},{},{})"
                                  .format(node_id, pos_x, pos_y, visit_cap))
-                self.cur.execute(
+                self.safe_execute(
                     "INSERT INTO grid_nodes VALUES({},{},{},{},{},{})".format(node_id, visit_count,
                                                                               visited, victims_num,
                                                                               need_rescue, node_type))
@@ -76,19 +93,19 @@ class GlobalDataInitializer:
             if i - self.map_width >= 0:
                 to_id = i - self.map_width
                 edge_id += 1
-                self.cur.execute("INSERT INTO grid_edges VALUES({},{},{},{})".format(from_id, to_id, edge_id, 1.0))
+                self.safe_execute("INSERT INTO grid_edges VALUES({},{},{},{})".format(from_id, to_id, edge_id, 1.0))
             if i + self.map_width < self.map_height * self.map_height:
                 to_id = i + self.map_width
                 edge_id += 1
-                self.cur.execute("INSERT INTO grid_edges VALUES({},{},{},{})".format(from_id, to_id, edge_id, 1.0))
+                self.safe_execute("INSERT INTO grid_edges VALUES({},{},{},{})".format(from_id, to_id, edge_id, 1.0))
             if i - 1 >= i - i % self.map_width:
                 to_id = i - 1
                 edge_id += 1
-                self.cur.execute("INSERT INTO grid_edges VALUES({},{},{},{})".format(from_id, to_id, edge_id, 1.0))
+                self.safe_execute("INSERT INTO grid_edges VALUES({},{},{},{})".format(from_id, to_id, edge_id, 1.0))
             if i + 1 < (i + self.map_width) - (i + self.map_width) % self.map_width:
                 to_id = i + 1
                 edge_id += 1
-                self.cur.execute("INSERT INTO grid_edges VALUES({},{},{},{})".format(from_id, to_id, edge_id, 1.0))
+                self.safe_execute("INSERT INTO grid_edges VALUES({},{},{},{})".format(from_id, to_id, edge_id, 1.0))
 
         for i in range(self.charge_num):
             node_id = self.charge_pos_list[i]
@@ -101,36 +118,36 @@ class GlobalDataInitializer:
             dock_cap = self.agent_num
             dock_num = 0
             cur_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            self.cur.execute("INSERT INTO charging_stations_config VALUES({},{},{},{},{})".format(
+            self.safe_execute("INSERT INTO charging_stations_config VALUES({},{},{},{},{})".format(
                 station_id, node_id, charging_cap, queue_cap, dock_cap
             ))
-            self.cur.execute("INSERT INTO charging_stations_cur_state VALUES({},{},{},{},{},'{}')".format(
+            self.safe_execute("INSERT INTO charging_stations_cur_state VALUES({},{},{},{},{},'{}')".format(
                 station_id, is_inservice, cur_utilization, queue_length,
                 dock_num, cur_timestamp
             ))
 
-        self.cur.execute("SELECT * FROM areas")
-        rows = self.cur.fetchall()
-        print(rows)
-        self.cur.execute("SELECT * FROM nodes_config")
-        rows = self.cur.fetchall()
-        print(rows)
-        self.cur.execute("SELECT * FROM grid_nodes")
-        rows = self.cur.fetchall()
-        print(rows)
-        self.cur.execute("SELECT * FROM grid_edges")
-        rows = self.cur.fetchall()
-        print(rows)
-        self.cur.execute("SELECT * FROM charging_stations_config")
-        rows = self.cur.fetchall()
-        print(rows)
-        self.cur.execute("SELECT * FROM charging_stations_cur_state")
-        rows = self.cur.fetchall()
-        print(rows)
+        # self.safe_execute("SELECT * FROM areas")
+        # rows = self.cur.fetchall()
+        # print(rows)
+        # self.safe_execute("SELECT * FROM nodes_config")
+        # rows = self.cur.fetchall()
+        # print(rows)
+        # self.safe_execute("SELECT * FROM grid_nodes")
+        # rows = self.cur.fetchall()
+        # print(rows)
+        # self.safe_execute("SELECT * FROM grid_edges")
+        # rows = self.cur.fetchall()
+        # print(rows)
+        # self.safe_execute("SELECT * FROM charging_stations_config")
+        # rows = self.cur.fetchall()
+        # print(rows)
+        # self.safe_execute("SELECT * FROM charging_stations_cur_state")
+        # rows = self.cur.fetchall()
+        # print(rows)
 
     def initNewAgentViews(self):
-        self.cur.execute("TRUNCATE TABLE drones_config")
-        self.cur.execute("TRUNCATE TABLE drones_cur_state")
+        self.safe_execute("TRUNCATE TABLE drones_config")
+        self.safe_execute("TRUNCATE TABLE drones_cur_state")
         uav_count = 0
         for j in range(len(self.agent_g_num)):
             fleet_id = j
@@ -141,8 +158,6 @@ class GlobalDataInitializer:
                     loc_node_id = random.randint(0, self.map_height * self.map_width)
                 else:
                     loc_node_id = random.choice(self.charge_pos_list)
-                sense_range = 2.0
-                view_range = 4.0
                 load_cap = 0
                 load_num = 0
                 max_electricity = self.expconfig.MAX_E
@@ -154,39 +169,40 @@ class GlobalDataInitializer:
                 workload = 0
                 completed_workload = 0
                 cur_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-                self.cur.execute(
+                self.safe_execute(
                     "INSERT INTO drones_cur_state VALUES({},{},{},{},{},{},{},{},'{}')".format(
-                        uav_id, loc_node_id, view_range,
+                        uav_id, loc_node_id, self.view_range,
                         load_num, cur_electricity, flying_state,
                         cur_path_length, cur_resource_cost, cur_timestamp
                     ))
-                self.cur.execute("INSERT INTO drones_config VALUES({},{},{},{},{},{})"
-                                 .format(uav_id, fleet_id, sense_range, load_cap, max_electricity,
+                self.safe_execute("INSERT INTO drones_config VALUES({},{},{},{},{},{})"
+                                 .format(uav_id, fleet_id, self.sense_range, load_cap, max_electricity,
                                          charge_efficiency))
 
-        self.cur.execute("SELECT * FROM drones_config")
-        rows = self.cur.fetchall()
-        print(rows)
-        self.cur.execute("SELECT * FROM drones_cur_state")
-        rows = self.cur.fetchall()
-        print(rows)
+        # self.safe_execute("SELECT * FROM drones_config")
+        # rows = self.cur.fetchall()
+        # print(rows)
+        # self.safe_execute("SELECT * FROM drones_cur_state")
+        # rows = self.cur.fetchall()
+        # print(rows)
 
     def initNewTaskViews(self):
         cur_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
-        self.cur.execute("TRUNCATE TABLE delivery_task_targets")
-        self.cur.execute("TRUNCATE TABLE delivery_cur_state")
-        self.cur.execute("TRUNCATE TABLE rescue_support_task_targets")
-        self.cur.execute("TRUNCATE TABLE rescue_support_cur_state")
-        self.cur.execute("TRUNCATE TABLE search_coverage_history_states")
-        self.cur.execute("TRUNCATE TABLE search_coverage_task")
-        self.cur.execute("TRUNCATE TABLE rescue_support_task")
-        self.cur.execute("TRUNCATE TABLE delivery_task")
+        self.safe_execute("TRUNCATE TABLE delivery_task_targets")
+        self.safe_execute("TRUNCATE TABLE delivery_cur_state")
+        self.safe_execute("TRUNCATE TABLE rescue_support_task_targets")
+        self.safe_execute("TRUNCATE TABLE rescue_support_cur_state")
+        self.safe_execute("TRUNCATE TABLE search_coverage_history_states")
+        self.safe_execute("TRUNCATE TABLE search_coverage_task")
+        self.safe_execute("TRUNCATE TABLE rescue_support_task")
+        self.safe_execute("TRUNCATE TABLE delivery_task")
 
-        self.cur.execute("INSERT INTO search_coverage_task VALUES(0,null,0,'{}',null)".format(cur_timestamp))
-        self.cur.execute("INSERT INTO rescue_support_task VALUES(0,'{}',null,0,null,1)".format(cur_timestamp))
-        self.cur.execute("INSERT INTO delivery_task VALUES(0,'{}',null,0,null,2)".format(cur_timestamp))
+        self.safe_execute("INSERT INTO search_coverage_task VALUES(0,null,0,'{}',null)".format(cur_timestamp))
+        self.safe_execute("INSERT INTO rescue_support_task VALUES(0,'{}',null,0,null,1)".format(cur_timestamp))
+        self.safe_execute("INSERT INTO delivery_task VALUES(0,'{}',null,0,null,2)".format(cur_timestamp))
 
     def initDefaultEnv(self, charge_list=None, drone_locs=None):
+
         if drone_locs is not None and charge_list is not None:
 
             d_list = list(
@@ -208,7 +224,12 @@ class GlobalDataInitializer:
             danger_list = list(np.random.choice(a=d_list, size=self.danger_num, replace=False, p=None))
         else:
             print("Waring: Valid operation when initializing Concrete Env, It may cause unexpected event later.")
-        rand_vic_point = list(np.random.choice(a=danger_list,size=1,replace=False,p=None))
+
+
+        if danger_list and len(danger_list)>0:
+            rand_vic_point = list(np.random.choice(a=danger_list,size=1,replace=False,p=None))
+        else:
+            rand_vic_point = []
         Nodes = []
         for i in range(self.map_width):
             Nodes.append([])
@@ -263,49 +284,60 @@ class GlobalDataInitializer:
         edge_id = -1
         for i in range(self.map_width * self.map_height):
             from_id = i
-            if Nodes[int(i / self.map_height)][int(i % self.map_height)].blocked:
+            from_x = int(i / self.map_height)
+            from_y = int(i % self.map_height)
+
+            if Nodes[from_x][from_y].blocked:
                 dis = self.static_info.EDGE_INX
             else:
                 dis = 1
-            if i - self.map_width >= 0:
-                to_id = i - self.map_width
+            if 0 <= from_x-1< self.map_width:
+                to_x = from_x - 1
+                to_y = from_y
+                to_id = to_x * self.map_height + to_y
                 if dis > 1:
                     tmp_dis = dis
                 else:
-                    if Nodes[int(to_id / self.map_height)][int(to_id % self.map_height)].blocked:
+                    if Nodes[to_x][to_y].blocked:
                         tmp_dis = self.static_info.EDGE_INX
                     else:
                         tmp_dis = 1
                 edge_id += 1
                 Edges.append(Edge(eid=edge_id, from_p=from_id, to_p=to_id, distance=tmp_dis))
-            if i + self.map_width < self.map_height * self.map_height:
-                to_id = i + self.map_width
+            if 0 <= from_x+1< self.map_width:
+                to_x = from_x + 1
+                to_y = from_y
+                to_id = to_x * self.map_height + to_y
                 if dis > 1:
                     tmp_dis = dis
                 else:
-                    if Nodes[int(to_id / self.map_height)][int(to_id % self.map_height)].blocked:
+                    if Nodes[to_x][to_y].blocked:
                         tmp_dis = self.static_info.EDGE_INX
                     else:
                         tmp_dis = 1
                 edge_id += 1
                 Edges.append(Edge(eid=edge_id, from_p=from_id, to_p=to_id, distance=tmp_dis))
-            if i - 1 >= i - i % self.map_width:
-                to_id = i - 1
+            if 0<= from_y-1 < self.map_height:
+                to_x = from_x
+                to_y = from_y-1
+                to_id = to_x * self.map_height + to_y
                 if dis > 1:
                     tmp_dis = dis
                 else:
-                    if Nodes[int(to_id / self.map_height)][int(to_id % self.map_height)].blocked:
+                    if Nodes[to_x][to_y].blocked:
                         tmp_dis = self.static_info.EDGE_INX
                     else:
                         tmp_dis = 1
                 edge_id += 1
                 Edges.append(Edge(eid=edge_id, from_p=from_id, to_p=to_id, distance=tmp_dis))
-            if i + 1 < (i + self.map_width) - (i + self.map_width) % self.map_width:
-                to_id = i + 1
+            if 0<= from_y+1 < self.map_height:
+                to_x = from_x
+                to_y = from_y + 1
+                to_id = to_x * self.map_height + to_y
                 if dis > 1:
                     tmp_dis = dis
                 else:
-                    if Nodes[int(to_id / self.map_height)][int(to_id % self.map_height)].blocked:
+                    if Nodes[to_x][to_y].blocked:
                         tmp_dis = self.static_info.EDGE_INX
                     else:
                         tmp_dis = 1
