@@ -37,10 +37,47 @@ class QueryTool:
         return True
 
     def sql_execute(self, query):
-        self.cur.execute(query)
-        rows = self.cur.fetchall()
-        colnames = [desc[0] for desc in self.cur.description]
-        return colnames, rows
+        try:
+            self.cur.execute(query)
+            rows = self.cur.fetchall()
+            colnames = [desc[0] for desc in self.cur.description]
+            return colnames, rows
+        except psycopg2.ProgrammingError as exc:
+            print(exc)
+            self.conn.rollback()
+            # self.cur = self.conn.cursor()
+            # self.cur.execute(query)
+            # rows = self.cur.fetchall()
+            # colnames = [desc[0] for desc in self.cur.description]
+            # return colnames, rows
+        except psycopg2.InterfaceError as exc:
+            print(exc)
+            self.conn = psycopg2.connect(database=self.database,
+                                                    user=self.user, password=
+                                                    self.password, host=self.host,
+                                                    port=self.port)
+            self.cur = self.conn.cursor()
+            # self.cur.execute(query)
+            # rows = self.cur.fetchall()
+            # colnames = [desc[0] for desc in self.cur.description]
+            # return colnames, rows
+
+    def safe_execute(self, query):
+        try:
+            self.cur.execute(query)
+        except psycopg2.ProgrammingError as exc:
+            print(exc)
+            self.conn.rollback()
+            # self.cur = self.conn.cursor()
+            # self.cur.execute(query)
+        except psycopg2.InterfaceError as exc:
+            print(exc)
+            self.conn = psycopg2.connect(database=self.database,
+                                                    user=self.user, password=
+                                                    self.password, host=self.host,
+                                                    port=self.port)
+            self.cur = self.conn.cursor()
+            # self.cur.execute(query)
 
     def clear_db_connection(self):
         self.conn.commit()

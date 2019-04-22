@@ -13,7 +13,8 @@ from framework.QueryTool import *
 
 
 class ConcreteEnv:
-    def __init__(self, charge_list, drone_locs, datasrc=None, metadata='../data/metadata.json'):
+    # metadata='../data/metadata.json'
+    def __init__(self, charge_list, drone_locs, datasrc=None, metadata=None):
         """
         Description:
             Init the concrete map of the environment according to real data or default setting.
@@ -27,21 +28,35 @@ class ConcreteEnv:
         """
         self.charge_list = charge_list
         # random.seed(time.time())
-        if metadata and os.path.isfile(metadata):
-            with open(file=metadata, mode='r') as fr:
-                metadata = json.loads("".join(fr.readlines()))['metadata']
-                # print(metadata)
-                self.width = metadata['width']
-                self.height = metadata['height']
-                self.node_num = metadata['node_num']
-                self.edge_num = metadata['edge_num']
-                self.charge_num = metadata['charge_num']
-                self.obstacle_num = metadata['obstacle_num']
-                self.danger_num = metadata['danger_num']
-                self.env_change_prob = metadata['env_change_prob']
-                # 环境变化概率,list[3],分别表示bolcked,victims_num,need_rescue的变化概率
-                self.stat_change_prob = metadata['stat_change_prob']
-                # station状态变化概率,list[2],分别表示station是否处于可用状态,以及处于station中无人机数量随机变化的概率
+        # if metadata and os.path.isfile(metadata):
+        #     with open(file=metadata, mode='r') as fr:
+        #         metadata = json.loads("".join(fr.readlines()))['metadata']
+        #         # print(metadata)
+        #         self.width = metadata['width']
+        #         self.height = metadata['height']
+        #         self.node_num = metadata['node_num']
+        #         self.edge_num = metadata['edge_num']
+        #         self.charge_num = metadata['charge_num']
+        #         self.obstacle_num = metadata['obstacle_num']
+        #         self.danger_num = metadata['danger_num']
+        #         self.env_change_prob = metadata['env_change_prob']
+        #         # 环境变化概率,list[3],分别表示bolcked,victims_num,need_rescue的变化概率
+        #         self.stat_change_prob = metadata['stat_change_prob']
+        #         # station状态变化概率,list[2],分别表示station是否处于可用状态,以及处于station中无人机数量随机变化的概率
+        if metadata and isinstance(metadata, dict):
+            self.width = metadata['width']
+            self.height = metadata['height']
+            self.node_num = metadata['node_num']
+            self.edge_num = metadata['edge_num']
+            self.charge_num = metadata['charge_num']
+            self.obstacle_num = metadata['obstacle_num']
+            self.danger_num = metadata['danger_num']
+            self.env_change_prob = metadata['env_change_prob']
+            # 环境变化概率,list[3],分别表示bolcked,victims_num,need_rescue的变化概率
+            self.stat_change_prob = metadata['stat_change_prob']
+            # station状态变化概率,list[2],分别表示station是否处于可用状态,以及处于station中无人机数量随机变化的概率
+            self.view_range = metadata['view_range']
+            self.sense_range = metadata['sense_range']
             if datasrc and os.path.isfile(datasrc):
                 # define datasrc structure and process the real data into specific structure
                 # create Points & Edges objects according to datasrc
@@ -130,7 +145,8 @@ class ConcreteEnv:
                     dg = GlobalDataInitializer(agent_num=None, map_width=self.width,
                                                map_height=self.height, charge_num=self.charge_num,
                                                obstacle_num=self.obstacle_num, danger_num=self.danger_num,
-                                               charge_pos_list=None, db_used=False)
+                                               charge_pos_list=None, db_used=False, view_range=self.view_range,
+                                               sense_range=self.sense_range)
                     self.Nodes, self.Edges = dg.initDefaultEnv(charge_list=self.charge_list, drone_locs=drone_locs)
                     nodes_json = []
                     for i in range(self.width):
@@ -185,6 +201,62 @@ class ConcreteEnv:
         for i in range(self.edge_num):
             self.Edges[i].update()
 
+class GlobalViewMap:
+
+    def __init__(self, grid=None, agents_pos=None, scale=None):
+        if scale is None:
+            self.Nodes = grid['nodes']
+            self.Edges = grid['edges']
+            self.Neighbors = agents_pos
+        else:
+            self.Nodes = {}
+            for x in range(scale[0]):
+                for y in range(scale[1]):
+                    nid = x*scale[1]+y
+                    node_type = 0
+                    visited = False
+                    victims_num = 0
+                    need_rescue = False
+                    self.Nodes[nid] = Point(nid=nid, pos_x=x, pos_y=y, node_type=node_type, victims_num=victims_num,
+                                           need_rescue=need_rescue, visited=visited)
+            self.Edges = {}
+            edge_id = -1
+            for i in range(scale[0] * scale[1]):
+                from_id = i
+                from_x = int(i / scale[1])
+                from_y = int(i % scale[1])
+                dis = 1
+                if 0 <= from_x - 1 < scale[0]:
+                    to_x = from_x - 1
+                    to_y = from_y
+                    to_id = to_x * scale[1] + to_y
+                    edge_id += 1
+                    self.Edges[str(from_id) + '_' + str(to_id)] = Edge(eid=edge_id, from_p=from_id, to_p=to_id, distance=dis)
+
+                if 0 <= from_x + 1 < scale[0]:
+                    to_x = from_x + 1
+                    to_y = from_y
+                    to_id = to_x * scale[1] + to_y
+                    edge_id += 1
+                    self.Edges[str(from_id) + '_' + str(to_id)] = Edge(eid=edge_id, from_p=from_id, to_p=to_id, distance=dis)
+
+                if 0 <= from_y - 1 < scale[1]:
+                    to_x = from_x
+                    to_y = from_y - 1
+                    to_id = to_x * scale[1] + to_y
+                    edge_id += 1
+                    self.Edges[str(from_id) + '_' + str(to_id)] = Edge(eid=edge_id, from_p=from_id, to_p=to_id,
+                                                                       distance=dis)
+
+                if 0 <= from_y + 1 < scale[1]:
+                    to_x = from_x
+                    to_y = from_y + 1
+                    to_id = to_x * scale[1] + to_y
+                    edge_id += 1
+                    self.Edges[str(from_id) + '_' + str(to_id)] = Edge(eid=edge_id, from_p=from_id, to_p=to_id,
+                                                                  distance=dis)
+
+            self.Neighbors = dict({})
 
 class LocalViewMap:
 
@@ -223,7 +295,7 @@ class LocalViewMap:
                              from_p=edge['from_id'],
                              to_p=edge['to_id'],
                              distance=edge['distance'])
-                self.Edges[edge['from_id'] + '_' + edge['to_id']] = new_e
+                self.Edges[str(edge['from_id']) + '_' + str(edge['to_id'])] = new_e
             for k in range(len(u_records)):
                 neighbor = {}
                 # u_record: uav_id, loc_node_id

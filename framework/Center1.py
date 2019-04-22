@@ -84,14 +84,20 @@ class Center:
         self.query_tool.clear_db_connection()
 
     def socket_communication(self):
-        self.create_request_listener()  # create socket listener thread
-        self.connect_with_agents()
+        try:
+            self.create_request_listener()  # create socket listener thread
+            self.connect_with_agents()
+        except Exception as e:
+            print(e)
         # print("Communication channel is closed.")
 
     def create_request_listener(self):
-        self.socket = socket(AF_INET, SOCK_STREAM)
-        self.socket.bind((self.HOST, self.PORT))
-        self.socket.listen()
+        try:
+            self.socket = socket(AF_INET, SOCK_STREAM)
+            self.socket.bind((self.HOST, self.PORT))
+            self.socket.listen()
+        except Exception as e:
+            print(e)
         # print("Socket is now listening.")
 
     def connect_with_agents(self):
@@ -119,10 +125,10 @@ class Center:
 
     def echo_agent(self, conn, addr):
         # print("Connected by address: ", addr)
-        while True:
-            try:
-            # temp_data = []
 
+        try:
+            temp_data = []
+            while True:
                 # self.socket.setblocking(0)
                 # ready = select.select([self.socket], [], [], 60)
                 data = conn.recv(1024*1024)
@@ -130,65 +136,68 @@ class Center:
                 if not data:
                     break
                 data = data.decode()
-                # if self.STATIC_INFO.END in data:
-                #     data = data[:data.find(self.STATIC_INFO.END)]
-                #     if data != "Data is received.":
-                #         temp_data.append(data)
-                #     break
+                # print(data)
+
+                if self.STATIC_INFO.END in data:
+                    data = data[:data.find(self.STATIC_INFO.END)]
+                    if data != "Data is received.":
+                        temp_data.append(data)
+                    break
                 # 打印接收到的数据?
                 # conn.sendall(data)
 
                 if data == "Data is received.":
                     break
                 else:
-            #         temp_data.append(data)
-            #
-            # data = ''.join(temp_data)
-                    print("Receiving request data.")
+                    temp_data.append(data)
 
-                    conn.send("Request is received.".encode())  # 对agent的响应信息
+            data = ''.join(temp_data)
+            # print("Receiving request data.")
 
-                    request_id = uuid.uuid1()
-                    self.resp_conditions[request_id] = Condition()
+            # conn.send("Request is received.".encode())  # 对agent的响应信息
 
-                    self.after_receive_request(data, request_id)
-                    print("uuid is:", request_id)
-                    conn.send("Request is in queue.".encode())
+            request_id = uuid.uuid1()
+            self.resp_conditions[request_id] = Condition()
 
-                    # 保证这里先运行,挂起等待才行
+            self.after_receive_request(data, request_id)
+            # print("uuid is:", request_id)
+            # conn.send("Request is in queue.".encode())
 
-                    if self.resp_conditions[request_id].acquire():
+            # 保证这里先运行,挂起等待才行
 
-                        print("echo get response lock for request ", request_id)
-                        if request_id not in self.response_data.keys():
-                            print("Waiting for response data ready")
-                            self.resp_conditions[request_id].wait()
-                            print("response data has been ready and notified the response thread.")
-                        elif 'data' not in self.response_data[request_id].keys():
-                            print("Waiting for response data ready")
-                            self.resp_conditions[request_id].wait()
-                            print("response data has been ready and notified the response thread.")
+            if self.resp_conditions[request_id].acquire():
 
-                        if self.response_data[request_id]['data']:
-                            conn.send("Data Ready.".encode())
-                            resp_data = json.dumps(self.response_data[request_id]['data'])
-                            conn.send(resp_data.encode())
-                            print('Has Sent Data Back To Drone.')
-                        else:
-                            conn.send("Put is done.".encode())
-                            print('Has Update Data According To Drone.')
-                        # conn.send("*".encode())
-                        self.response_data[request_id]['data_sent'] = True
+                # print("echo get response lock for request ", request_id)
+                if request_id not in self.response_data.keys():
+                    # print("Waiting for response data ready")
+                    self.resp_conditions[request_id].wait()
+                    # print("response data has been ready and notified the response thread.")
+                elif 'data' not in self.response_data[request_id].keys():
+                    # print("Waiting for response data ready")
+                    self.resp_conditions[request_id].wait()
+                    # print("response data has been ready and notified the response thread.")
 
-                        self.response_data[request_id].clear()
-                        self.response_data.pop(request_id)
+                if self.response_data[request_id]['data']:
+                    # conn.send("Data Ready.".encode())
+                    resp_data = json.dumps(self.response_data[request_id]['data'])
+                    conn.send(resp_data.encode())
+                    # print('Has Sent Data Back To Drone.')
+                else:
+                    pass
+                    # conn.send("Put is done.".encode())
+                    # print('Has Update Data According To Drone.')
+                conn.send("*".encode())
+                self.response_data[request_id]['data_sent'] = True
 
-                        self.resp_conditions[request_id].release()
-                        self.resp_conditions.pop(request_id)
+                self.response_data[request_id].clear()
+                self.response_data.pop(request_id)
 
-            except Exception as e:
-                print("Exception arose when receiving request from agent!")
-                print(e)
+                self.resp_conditions[request_id].release()
+                self.resp_conditions.pop(request_id)
+
+        except Exception as e:
+            print("Exception arose when receiving request from agent!")
+            print(e)
 
         conn.close()
 
@@ -330,6 +339,7 @@ class Center:
             # print("current request queue:", self.request_queue)
             # bug: 完全一样的request在request_queue中重复出现两次,造成这里在已经处理完一次后第二次处理时报错
             for i in range(len(self.request_queue)):
+                # print("p1.",len(self.request_queue))
                 if self.request_queue[i]['proc_id'] == 0:
                     # print("process request ", i)
                     uuid = self.request_queue[i]['uuid']
@@ -337,6 +347,7 @@ class Center:
                     # print("Process want to get response lock for request ", uuid)
                     self.resp_conditions[uuid].acquire()
                     # print("Process get response lock for request ", uuid)
+                    # print("p2. acquire", uuid)
 
                     self.response_data[uuid] = {}
                     index_.append(i)
@@ -482,6 +493,7 @@ class Center:
 
             if len(j_list) > 0:
                 for uuid in j_list:
+                    # print("p3. write notify", uuid)
                     self.response_data[uuid]['data_ready'] = True
                     self.resp_conditions[uuid].notify()
                     self.resp_conditions[uuid].release()
@@ -491,6 +503,7 @@ class Center:
                 # 如果是读操作，更新self.response_data[req_uuid].data中的数据为要返回的数据
                 for uuid_ in merge_list:
                     self.response_data[uuid_]['data_ready'] = True
+                    # print("p4. read notify", uuid_)
                     self.resp_conditions[uuid_].notify()
                     self.resp_conditions[uuid_].release()
 
@@ -539,10 +552,10 @@ class Center:
             self.condition.notify()
             self.condition.release()
 
-            time_elapse = time.time() - proc_start_time
-            if time_elapse > self.experiment_config.timeout or sum(list(self.agents_state.values())) == len(
-                    list(self.agents_state.keys())):
-                self._running = False
+            # time_elapse = time.time() - proc_start_time
+            # if time_elapse > self.experiment_config.timeout or sum(list(self.agents_state.values())) == len(
+            #         list(self.agents_state.keys())):
+            #     self._running = False
 
         end_time = time.clock()
         self.process_time = end_time - p_start_time
@@ -1258,9 +1271,10 @@ def get_args():
 
 
 if __name__ == "__main__":
+    yappi.clear_stats()
+    yappi.set_clock_type("wall")
     yappi.start()
     # cpu clock by default, we also can use wall clock (inncluding thread waiting time)
-    # yappi.set_clock_type("wall")
 
     # Initializing by arguments
     args = get_args()

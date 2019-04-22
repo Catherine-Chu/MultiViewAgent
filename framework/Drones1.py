@@ -67,6 +67,8 @@ class UAV:
             self.broadcast_cpu_clock = 0
             self.connect_cost = 0
             self.connect_count = 0
+            self.hybrid_rd = 0
+            self.broadcast_rd = 0
 
             #     self.state_init()
             #
@@ -133,6 +135,9 @@ class UAV:
             self.broadcast_cpu_clock = 0
             self.connect_cost = 0
             self.connect_count = 0
+
+            self.hybrid_rd = 0
+            self.broadcast_rd = 0
         # self.cloud_cpu_clock = 0
         # self.broadcast_cpu_clock = 0
         # self.connect_cost = 0
@@ -180,52 +185,62 @@ class UAV:
                              'sense_time': args['sense_time']}
         send_data = json.dumps(send_data)
         self.socket.send(send_data.encode())
-        # self.socket.send("*".encode())
+        self.socket.send("*".encode())
         get_data = None
         total_data = []
         data = None
 
-        while True:
-            try:
+
+        try:
+            while True:
 
                 # self.socket.setblocking(0)
 
-                data = self.socket.recv(1024*1024)
+                data = self.socket.recv(4096)
                 if not data:
-                    print("Without receiving data.")
+                    # print("Without receiving data.")
                     break
                 data = data.decode()
+                # print("1.",data)
 
-                # if self.STATIC_INFO.END in data:
-                #     data = data[:data.find(self.STATIC_INFO.END)]
-                #     if data != "Put is done." and not (
-                #             data == "Request is received." or data == "Request is in queue." or data == 'Data Ready.'):
-                #         total_data.append(data)
-                #     break
+                if self.STATIC_INFO.END in data:
+                    data = data[:data.find(self.STATIC_INFO.END)]
+                    if data != "Put is done." and not (
+                            data == "Request is received." or data == "Request is in queue." or data == 'Data Ready.'):
+                        # print("2.",data)
+                        total_data.append(data)
+                    break
 
                 if data == "Request is received." or data == "Request is in queue." or data == 'Data Ready.':
-                    print(data)
+                    # print(data)
                     continue
                 elif data == "Put is done.":
-                    print("Put is done.")
+                    # print("Put is done.")
                     break
                 else:
-                    # total_data.append(data)
-            # temp_data = ''.join(total_data)
-            #         if len(temp_data) > 0:
-                    print("Receiving meaningful data.")
-                    data = json.loads(data)
-                    if isinstance(data, list) or isinstance(data, dict):
-                        self.socket.send('Data is received.'.encode())
-                        # self.socket.send("*".encode())
-                        get_data = data
-                    else:
-                        raise CustomError('Returned wrong data!')
+                    total_data.append(data)
+            temp_data = ''.join(total_data)
+            if len(temp_data) > 0:
+                # print("Receiving meaningful data.")
+                # print("3.",temp_data)
+                data = json.loads(temp_data)
+                # print("4.",data)
+                if isinstance(data, list) or isinstance(data, dict):
+                    # print('1 done')
+                    self.socket.send('Data is received.*'.encode())
+                    # print('2 done')
+                    # self.socket.send("*".encode())
+                    # print('3 donne')
+                    get_data = data
+                    # print('3 done')
+                    # print(get_data)
+                else:
+                    raise CustomError('Returned wrong data!')
 
-            except Exception as e:
-                print("Exception when receiving data from center. May be for bad json.")
-                print(get_data)
-                print(e)
+        except Exception as e:
+            print("Exception when receiving data from center. May be for bad json.")
+            print(get_data)
+            print(e)
 
         # time.sleep(4)
         self.socket.close()
@@ -308,6 +323,7 @@ class UAV:
             break
 
     def broadcast_run_search(self, env):
+        self.broadcast_rd = 0
 
         drone_start_clock = time.clock()
 
@@ -482,207 +498,70 @@ class UAV:
         return None
 
     def run(self, env):
-        # State Machine
-        drone_start_clock = time.clock()
-        self.connect_cost = 0
-        self.connect_count = 0
-        while self._running:
-            # 无人机正常飞行过程中的主要逻辑，包括什么时候调用self.connect_with_center函数/创建线程
-            if self.cur_State == 0:
-                # WW: Waiting For Work State
-                if self.is_allocated_task():
-                    self.cur_State = 1
-                    sense_time = time.time()
-                    new_data = [
-                        [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN, 'CE': self.cur_E,
-                          'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
-                    self.connect_with_center(RoW='W', View_List=[2], GoL='L',
-                                             Datas={'sense_time': sense_time, 'new_data': new_data}, SQLs=None)
-                    # daemon=false相当于在主线程最后调用thread.join方法,子线程为后台线程，主线程完成后会等待子线程结束然后再结束
-                    # daemon=true则主线程结束,子线程自动结束
-                else:
-                    if self.TID is None:
-                        time.sleep(5)
-                        continue
-                    else:
-                        self.cur_State = 5  # 标识任务结束
-                        # 不需要同步到中心,中心中drones_state表里的flying_state=5应该在中心添加end_time的时候同步更新了,
-                        # 现在agent能够进入到这里说明中心已经更新过数据,这是agent主动获取到的关于任务的新数据,因为在WW状态下agent只能通过对
-                        # 任务数据的查询判断自己应不应该进行状态变迁
-                        # 当然也可以对每个agent也建立监听socket,用于接收来自center主动发出的控制数据
-                        # (当前的通信连接都是agent主动发起的,center不能更新数据后立刻让agent知道,这能是agent需要数据或者决定查询的时候将
-                        # 新数据同步到agent,这样是为了避免agent时刻维持监听耗费资源,被动接受自己不需要的数据)
-                        break
-            elif self.cur_State == 1:
-                # IW: In Working State:
-                if self.TID is None:
-                    self.is_allocated_task()
-                    if self.TID is None:
-                        self.cur_State = 0
+        self.hybrid_rd = 0
+        try:
+            # State Machine
+            drone_start_clock = time.clock()
+            self.connect_cost = 0
+            self.connect_count = 0
+            while self._running:
+                # 无人机正常飞行过程中的主要逻辑，包括什么时候调用self.connect_with_center函数/创建线程
+                if self.cur_State == 0:
+                    # WW: Waiting For Work State
+                    if self.is_allocated_task():
+                        self.cur_State = 1
                         sense_time = time.time()
                         new_data = [
                             [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN, 'CE': self.cur_E,
-                              'FS': 0, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
-                        self.connect_with_center(RoW='W', View_List=[2], GoL='L', Datas={'sense_time': sense_time,
-                                                                                         'new_data': new_data},
-                                                 SQLs=None)
-                        continue
-                if self.TID == 0:
-                    # working in search_coverage_task
-                    # if not self.is_work_done(0):
-                    get_data = self.connect_with_center(RoW='R', View_List=[0, 1, 6], GoL='L')
-                    # 以下两句会将Local_View_Map中的数据更新到最新,第一句得到的数据均标记为未更新(因为是从center拿到的)
-                    # 第二句中sense到的并且和Local_View_Map中数据不一致的要更新,并把所有更新过的标记为已更新
-                    self.Local_View_Map.update_map(get_data)
-                    sense_time = self.sense_within_range(env)
-                    healthy = self.self_check()
-                    if healthy:
-                        new_data = self.gen_new_data(View_List=[0, 1, 2])
-                        self.connect_with_center(RoW='W', View_List=[0, 1, 2], GoL='L',
-                                                 Datas={'sense_time': sense_time,
-                                                        'new_data': new_data},
-                                                 SQLs=None)
-
-                        next_nid, next_x, next_y = self.make_move_decision(tid=0, scale=(env.width, env.height))
-                        if next_nid is not None:
-                            sense_time = self.move(next_nid, next_x, next_y)
-                            new_data = [[{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
-                                          'CE': self.cur_E,
-                                          'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
-                            self.connect_with_center(RoW='W', View_List=[2], GoL='L',
-                                                     Datas={'sense_time': sense_time,
-                                                            'new_data': new_data},
-                                                     SQLs=None)
+                              'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                        self.connect_with_center(RoW='W', View_List=[2], GoL='L',
+                                                 Datas={'sense_time': sense_time, 'new_data': new_data}, SQLs=None)
+                        # daemon=false相当于在主线程最后调用thread.join方法,子线程为后台线程，主线程完成后会等待子线程结束然后再结束
+                        # daemon=true则主线程结束,子线程自动结束
+                    else:
+                        if self.TID is None:
+                            time.sleep(5)
+                            continue
                         else:
-                            # when drone can't find next start point within local view data, it need to increase
-                            # the view range parameters
-
-                            # if self.VR < math.sqrt(env.width * env.width + env.height * env.height):
-                            #     self.VR = math.ceil(math.sqrt(env.width * env.width + env.height * env.height))
-                            #     sense_time = time.time()
-                            #     new_data = [
-                            #         [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
-                            #           'CE': self.cur_E,
-                            #           'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
-                            #     self.connect_with_center(RoW='W', View_List=[2], GoL='L',
-                            #                              Datas={'sense_time': sense_time,
-                            #                                     'new_data': new_data},
-                            #                              SQLs=None)
-                            #     continue
-                            # else:
-                            #     self.cur_State = 5
-                            #     break
-                            self.cur_State = 5
+                            self.cur_State = 5  # 标识任务结束
+                            # 不需要同步到中心,中心中drones_state表里的flying_state=5应该在中心添加end_time的时候同步更新了,
+                            # 现在agent能够进入到这里说明中心已经更新过数据,这是agent主动获取到的关于任务的新数据,因为在WW状态下agent只能通过对
+                            # 任务数据的查询判断自己应不应该进行状态变迁
+                            # 当然也可以对每个agent也建立监听socket,用于接收来自center主动发出的控制数据
+                            # (当前的通信连接都是agent主动发起的,center不能更新数据后立刻让agent知道,这能是agent需要数据或者决定查询的时候将
+                            # 新数据同步到agent,这样是为了避免agent时刻维持监听耗费资源,被动接受自己不需要的数据)
                             break
-                    else:
-                        #     new_data = self.gen_new_data(View_List=[0, 1, 2])
-                        #     self.connect_with_center(RoW='W', View_List=[0, 1, 2], GoL='L',
-                        #                              Datas={'sense_time': sense_time,
-                        #                                     'new_data': new_data},
-                        #                              SQLs=None)
-                        #     # time.sleep(1)
-                        #     get_data, _ = self.connect_with_center(RoW='R', View_List=[3], GoL='L')
-                        #
-                        #     # print("\n\n\n")
-                        #     # print("Charge tar view reading check")
-                        #     # print(get_data)
-                        #     # print(len(get_data))  # 1
-                        #     # print(len(get_data[0]))  # 2
-                        #     # print(len(get_data[0][1]))  # 可选充电目标点数目,目前的表格中初步估计为0
-                        #     # print("\n\n\n")
-                        #
-                        #     charge_tar = get_data[0]
-                        #
-                        #     self.Local_View_Map.update_charge_stations(charge_tar)
-                        self.cur_State = 2
-                    # else:
-                    #     self.cur_State = 5
-                    #     break
-                elif self.TID == 1:
-                    # working in rescue_coverage_task
-                    if not self.is_work_done(1):
-                        get_data = self.connect_with_center(RoW='R', View_List=[0, 1, 6, 4], GoL='L')
+                elif self.cur_State == 1:
+                    # IW: In Working State:
+                    if self.TID is None:
+                        self.is_allocated_task()
+                        if self.TID is None:
+                            self.cur_State = 0
+                            sense_time = time.time()
+                            new_data = [
+                                [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN, 'CE': self.cur_E,
+                                  'FS': 0, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                            self.connect_with_center(RoW='W', View_List=[2], GoL='L', Datas={'sense_time': sense_time,
+                                                                                             'new_data': new_data},
+                                                     SQLs=None)
+                            continue
+                    if self.TID == 0:
+                        # working in search_coverage_task
+                        # if not self.is_work_done(0):
+                        get_data = self.connect_with_center(RoW='R', View_List=[0, 1, 6], GoL='L')
                         # 以下两句会将Local_View_Map中的数据更新到最新,第一句得到的数据均标记为未更新(因为是从center拿到的)
                         # 第二句中sense到的并且和Local_View_Map中数据不一致的要更新,并把所有更新过的标记为已更新
-                        self.Local_View_Map.update_map(get_data[0:3])
-                        self.Local_View_Map.update_rescue_targets(get_data[3])
-                        self.cur_rescue_tar = self.choose_rescue_target()
+                        self.Local_View_Map.update_map(get_data)
                         sense_time = self.sense_within_range(env)
                         healthy = self.self_check()
                         if healthy:
-                            new_data = self.gen_new_data(View_List=[0, 1, 2, 4])
-                            self.connect_with_center(RoW='W', View_List=[0, 1, 2, 4], GoL='L',
+                            new_data = self.gen_new_data(View_List=[0, 1, 2])
+                            self.connect_with_center(RoW='W', View_List=[0, 1, 2], GoL='L',
                                                      Datas={'sense_time': sense_time,
                                                             'new_data': new_data},
                                                      SQLs=None)
 
-                            next_nid, next_x, next_y = self.make_move_decision(tid=1, scale=(env.width, env.height))
-                            if next_nid is not None:
-                                if abs(next_x - self.cur_PX) + abs(next_y - self.cur_PY) > 1:
-                                    print("Error in moving decision for rescue tasks!")
-                                    self.cur_State = 5
-                                    break
-                                else:
-                                    sense_time = self.move(next_nid, next_x, next_y)
-                                    new_data = [
-                                        [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
-                                          'CE': self.cur_E,
-                                          'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
-                                    self.connect_with_center(RoW='W', View_List=[2], GoL='L',
-                                                             Datas={'sense_time': sense_time,
-                                                                    'new_data': new_data},
-                                                             SQLs=None)
-                            else:
-                                if self.VR < math.sqrt(env.width * env.width + env.height * env.height) / 2:
-                                    self.VR = math.floor(math.sqrt(env.width * env.width + env.height * env.height) / 2)
-                                    sense_time = time.time()
-                                    new_data = [
-                                        [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
-                                          'CE': self.cur_E,
-                                          'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
-                                    self.connect_with_center(RoW='W', View_List=[2], GoL='L',
-                                                             Datas={'sense_time': sense_time,
-                                                                    'new_data': new_data},
-                                                             SQLs=None)
-                                    continue
-                                else:
-                                    self.cur_State = 5
-                                    break
-                        # else:
-                        #     new_data = self.gen_new_data(View_List=[0, 1, 2, 4])
-                        #     self.connect_with_center(RoW='W', View_List=[0, 1, 2, 4], GoL='L',
-                        #                              Datas={'sense_time': sense_time,
-                        #                                     'new_data': new_data},
-                        #                              SQLs=None)
-                        #     # time.sleep(1)
-                        #
-                        #     get_data, _ = self.connect_with_center(RoW='R', View_List=[3], GoL='L')
-                        #
-                        #     charge_tar = get_data[0]
-                        #     self.Local_View_Map.update_charge_stations(charge_tar)
-                        #     self.cur_State = 2
-                    else:
-                        self.cur_State = 5
-                        break
-                elif self.TID == 2:
-                    # working in delivery_task
-                    if not self.is_work_done(2):
-                        get_data = self.connect_with_center(RoW='R', View_List=[0, 1, 6, 5], GoL='L')
-                        # 以下两句会将Local_View_Map中的数据更新到最新,第一句得到的数据均标记为未更新(因为是从center拿到的)
-                        # 第二句中sense到的并且和Local_View_Map中数据不一致的要更新,并把所有更新过的标记为已更新
-                        self.Local_View_Map.update_map(get_data[0:3])
-                        self.Local_View_Map.update_delivery_targets(get_data[3])
-                        self.cur_delivery_tar = self.choose_delivery_target()
-                        sense_time = self.sense_within_range(env)
-                        healthy = self.self_check()
-                        if healthy:
-                            new_data = self.gen_new_data(View_List=[0, 1, 2, 5])
-                            self.connect_with_center(RoW='W', View_List=[0, 1, 2, 5], GoL='L',
-                                                     Datas={'sense_time': sense_time,
-                                                            'new_data': new_data},
-                                                     SQLs=None)
-
-                            next_nid, next_x, next_y = self.make_move_decision(tid=2, scale=(env.width, env.height))
+                            next_nid, next_x, next_y = self.make_move_decision(tid=0, scale=(env.width, env.height))
                             if next_nid is not None:
                                 sense_time = self.move(next_nid, next_x, next_y)
                                 new_data = [[{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
@@ -693,90 +572,232 @@ class UAV:
                                                                 'new_data': new_data},
                                                          SQLs=None)
                             else:
-                                if self.VR < math.sqrt(env.width * env.width + env.height * env.height) / 2:
-                                    self.VR = math.floor(math.sqrt(env.width * env.width + env.height * env.height) / 2)
-                                    sense_time = time.time()
-                                    new_data = [
-                                        [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
-                                          'CE': self.cur_E,
-                                          'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                                # when drone can't find next start point within local view data, it need to increase
+                                # the view range parameters
+
+                                # if self.VR < math.sqrt(env.width * env.width + env.height * env.height):
+                                #     self.VR = math.ceil(math.sqrt(env.width * env.width + env.height * env.height))
+                                #     sense_time = time.time()
+                                #     new_data = [
+                                #         [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
+                                #           'CE': self.cur_E,
+                                #           'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                                #     self.connect_with_center(RoW='W', View_List=[2], GoL='L',
+                                #                              Datas={'sense_time': sense_time,
+                                #                                     'new_data': new_data},
+                                #                              SQLs=None)
+                                #     continue
+                                # else:
+                                #     self.cur_State = 5
+                                #     break
+                                self.cur_State = 5
+                                break
+                        else:
+                            #     new_data = self.gen_new_data(View_List=[0, 1, 2])
+                            #     self.connect_with_center(RoW='W', View_List=[0, 1, 2], GoL='L',
+                            #                              Datas={'sense_time': sense_time,
+                            #                                     'new_data': new_data},
+                            #                              SQLs=None)
+                            #     # time.sleep(1)
+                            #     get_data, _ = self.connect_with_center(RoW='R', View_List=[3], GoL='L')
+                            #
+                            #     # print("\n\n\n")
+                            #     # print("Charge tar view reading check")
+                            #     # print(get_data)
+                            #     # print(len(get_data))  # 1
+                            #     # print(len(get_data[0]))  # 2
+                            #     # print(len(get_data[0][1]))  # 可选充电目标点数目,目前的表格中初步估计为0
+                            #     # print("\n\n\n")
+                            #
+                            #     charge_tar = get_data[0]
+                            #
+                            #     self.Local_View_Map.update_charge_stations(charge_tar)
+                            self.cur_State = 2
+                        # else:
+                        #     self.cur_State = 5
+                        #     break
+                    elif self.TID == 1:
+                        # working in rescue_coverage_task
+                        if not self.is_work_done(1):
+                            get_data = self.connect_with_center(RoW='R', View_List=[0, 1, 6, 4], GoL='L')
+                            # 以下两句会将Local_View_Map中的数据更新到最新,第一句得到的数据均标记为未更新(因为是从center拿到的)
+                            # 第二句中sense到的并且和Local_View_Map中数据不一致的要更新,并把所有更新过的标记为已更新
+                            self.Local_View_Map.update_map(get_data[0:3])
+                            self.Local_View_Map.update_rescue_targets(get_data[3])
+                            self.cur_rescue_tar = self.choose_rescue_target()
+                            sense_time = self.sense_within_range(env)
+                            healthy = self.self_check()
+                            if healthy:
+                                new_data = self.gen_new_data(View_List=[0, 1, 2, 4])
+                                self.connect_with_center(RoW='W', View_List=[0, 1, 2, 4], GoL='L',
+                                                         Datas={'sense_time': sense_time,
+                                                                'new_data': new_data},
+                                                         SQLs=None)
+
+                                next_nid, next_x, next_y = self.make_move_decision(tid=1, scale=(env.width, env.height))
+                                if next_nid is not None:
+                                    if abs(next_x - self.cur_PX) + abs(next_y - self.cur_PY) > 1:
+                                        print("Error in moving decision for rescue tasks!")
+                                        self.cur_State = 5
+                                        break
+                                    else:
+                                        sense_time = self.move(next_nid, next_x, next_y)
+                                        new_data = [
+                                            [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
+                                              'CE': self.cur_E,
+                                              'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                                        self.connect_with_center(RoW='W', View_List=[2], GoL='L',
+                                                                 Datas={'sense_time': sense_time,
+                                                                        'new_data': new_data},
+                                                                 SQLs=None)
+                                else:
+                                    if self.VR < math.sqrt(env.width * env.width + env.height * env.height) / 2:
+                                        self.VR = math.floor(math.sqrt(env.width * env.width + env.height * env.height) / 2)
+                                        sense_time = time.time()
+                                        new_data = [
+                                            [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
+                                              'CE': self.cur_E,
+                                              'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                                        self.connect_with_center(RoW='W', View_List=[2], GoL='L',
+                                                                 Datas={'sense_time': sense_time,
+                                                                        'new_data': new_data},
+                                                                 SQLs=None)
+                                        continue
+                                    else:
+                                        self.cur_State = 5
+                                        break
+                            # else:
+                            #     new_data = self.gen_new_data(View_List=[0, 1, 2, 4])
+                            #     self.connect_with_center(RoW='W', View_List=[0, 1, 2, 4], GoL='L',
+                            #                              Datas={'sense_time': sense_time,
+                            #                                     'new_data': new_data},
+                            #                              SQLs=None)
+                            #     # time.sleep(1)
+                            #
+                            #     get_data, _ = self.connect_with_center(RoW='R', View_List=[3], GoL='L')
+                            #
+                            #     charge_tar = get_data[0]
+                            #     self.Local_View_Map.update_charge_stations(charge_tar)
+                            #     self.cur_State = 2
+                        else:
+                            self.cur_State = 5
+                            break
+                    elif self.TID == 2:
+                        # working in delivery_task
+                        if not self.is_work_done(2):
+                            get_data = self.connect_with_center(RoW='R', View_List=[0, 1, 6, 5], GoL='L')
+                            # 以下两句会将Local_View_Map中的数据更新到最新,第一句得到的数据均标记为未更新(因为是从center拿到的)
+                            # 第二句中sense到的并且和Local_View_Map中数据不一致的要更新,并把所有更新过的标记为已更新
+                            self.Local_View_Map.update_map(get_data[0:3])
+                            self.Local_View_Map.update_delivery_targets(get_data[3])
+                            self.cur_delivery_tar = self.choose_delivery_target()
+                            sense_time = self.sense_within_range(env)
+                            healthy = self.self_check()
+                            if healthy:
+                                new_data = self.gen_new_data(View_List=[0, 1, 2, 5])
+                                self.connect_with_center(RoW='W', View_List=[0, 1, 2, 5], GoL='L',
+                                                         Datas={'sense_time': sense_time,
+                                                                'new_data': new_data},
+                                                         SQLs=None)
+
+                                next_nid, next_x, next_y = self.make_move_decision(tid=2, scale=(env.width, env.height))
+                                if next_nid is not None:
+                                    sense_time = self.move(next_nid, next_x, next_y)
+                                    new_data = [[{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
+                                                  'CE': self.cur_E,
+                                                  'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
                                     self.connect_with_center(RoW='W', View_List=[2], GoL='L',
                                                              Datas={'sense_time': sense_time,
                                                                     'new_data': new_data},
                                                              SQLs=None)
-                                    continue
                                 else:
-                                    self.cur_State = 5
-                                    break
-                        else:
-                            new_data = self.gen_new_data(View_List=[0, 1, 2, 5])
-                            self.connect_with_center(RoW='W', View_List=[0, 1, 2, 5], GoL='L',
-                                                     Datas={'sense_time': sense_time,
-                                                            'new_data': new_data},
-                                                     SQLs=None)
-                            # time.sleep(1)
+                                    if self.VR < math.sqrt(env.width * env.width + env.height * env.height) / 2:
+                                        self.VR = math.floor(math.sqrt(env.width * env.width + env.height * env.height) / 2)
+                                        sense_time = time.time()
+                                        new_data = [
+                                            [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN,
+                                              'CE': self.cur_E,
+                                              'FS': 1, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                                        self.connect_with_center(RoW='W', View_List=[2], GoL='L',
+                                                                 Datas={'sense_time': sense_time,
+                                                                        'new_data': new_data},
+                                                                 SQLs=None)
+                                        continue
+                                    else:
+                                        self.cur_State = 5
+                                        break
+                            else:
+                                new_data = self.gen_new_data(View_List=[0, 1, 2, 5])
+                                self.connect_with_center(RoW='W', View_List=[0, 1, 2, 5], GoL='L',
+                                                         Datas={'sense_time': sense_time,
+                                                                'new_data': new_data},
+                                                         SQLs=None)
+                                # time.sleep(1)
 
-                            get_data = self.connect_with_center(RoW='R', View_List=[3], GoL='L')
-                            charge_tar = get_data[0]
-                            self.Local_View_Map.update_charge_stations(charge_tar)
-                            self.cur_State = 2
-                    else:
-                        self.cur_State = 5
-                        break
-            elif self.cur_State == 2:
-                # TODO: GO FOR CHARGING
-                # if self.cur_charge_tar is None:
-                #     self.cur_charge_tar = self.choose_charging_station()
-                # if self.cur_NID != self.cur_charge_tar.NID:
-                #     # 飞到指定地点的过程中,cur_state=2不变
-                #     # 但要注意判断需不需要变更指定地点
-                #     # 判断依据是每到一个新地点都需要重新获取一次的charge targets view
-                #     continue
-                # else:
-                #     # 到达指定地点时进行判断,看能不能充电
-                #     # 注意:如果是由UAV主动变更charge targets view中充电站的属性,必须是到达该点的时候
-                #     # 其他时候view的主动变更直接由center操作(可以理解为充电站主体主动变更并告知了center,center直接修改了相关table数据)
-                #     if self.cur_charge_tar.cur_utilization < self.cur_charge_tar.charging_cap:
-                #         self.cur_State = 4
-                #     elif self.cur_charge_tar.queue_length < self.cur_charge_tar.queue_cap:
-                #         self.cur_State = 3
-                #     elif self.cur_charge_tar.dock_num < self.cur_charge_tar.dock_cap:
-                #         self.cur_State = 3  # 暂时dock在充电站等待进入等待充电的队列,以及在充电队列
-                #         # 再设置个量和上面的直接进入等待充电队列的分开,交给state=3的部分判断
-                #     else:
-                #         self.cur_State = 5  # 没有地方停,没有地方充电,只能是退出任务,随便找地方降落等待回收
-                #         break
-                self.cur_State = 5
-                break
-            elif self.cur_State == 3:
-                # TODO: WAITING FOR CHARGING
-                self.cur_State = 4
-                continue
-            elif self.cur_State == 4:
-                # TODO: IN CHARGING
-                self.cur_State = 0
-                continue
-            else:
-                self.cur_State = 5
+                                get_data = self.connect_with_center(RoW='R', View_List=[3], GoL='L')
+                                charge_tar = get_data[0]
+                                self.Local_View_Map.update_charge_stations(charge_tar)
+                                self.cur_State = 2
+                        else:
+                            self.cur_State = 5
+                            break
+                elif self.cur_State == 2:
+                    # TODO: GO FOR CHARGING
+                    # if self.cur_charge_tar is None:
+                    #     self.cur_charge_tar = self.choose_charging_station()
+                    # if self.cur_NID != self.cur_charge_tar.NID:
+                    #     # 飞到指定地点的过程中,cur_state=2不变
+                    #     # 但要注意判断需不需要变更指定地点
+                    #     # 判断依据是每到一个新地点都需要重新获取一次的charge targets view
+                    #     continue
+                    # else:
+                    #     # 到达指定地点时进行判断,看能不能充电
+                    #     # 注意:如果是由UAV主动变更charge targets view中充电站的属性,必须是到达该点的时候
+                    #     # 其他时候view的主动变更直接由center操作(可以理解为充电站主体主动变更并告知了center,center直接修改了相关table数据)
+                    #     if self.cur_charge_tar.cur_utilization < self.cur_charge_tar.charging_cap:
+                    #         self.cur_State = 4
+                    #     elif self.cur_charge_tar.queue_length < self.cur_charge_tar.queue_cap:
+                    #         self.cur_State = 3
+                    #     elif self.cur_charge_tar.dock_num < self.cur_charge_tar.dock_cap:
+                    #         self.cur_State = 3  # 暂时dock在充电站等待进入等待充电的队列,以及在充电队列
+                    #         # 再设置个量和上面的直接进入等待充电队列的分开,交给state=3的部分判断
+                    #     else:
+                    #         self.cur_State = 5  # 没有地方停,没有地方充电,只能是退出任务,随便找地方降落等待回收
+                    #         break
+                    self.cur_State = 5
+                    break
+                elif self.cur_State == 3:
+                    # TODO: WAITING FOR CHARGING
+                    self.cur_State = 4
+                    continue
+                elif self.cur_State == 4:
+                    # TODO: IN CHARGING
+                    self.cur_State = 0
+                    continue
+                else:
+                    self.cur_State = 5
+                    self._running = False
+                # TODO
+                #  time.sleep(2)
+            # 主进程要求终止后，需要处理的收尾工作
+            if self.cur_State == 5:
+                sense_time = time.time()
+                new_data = [
+                    [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN, 'CE': self.cur_E,
+                      'FS': 5, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
+                self.connect_with_center(RoW='W', View_List=[2], GoL='L',
+                                         Datas={'sense_time': sense_time, 'new_data': new_data}, SQLs=None)
+                self.connect_with_center(RoW='W', GoL='G', Compute=True, Func='SetAgentsWorkState',
+                                         args={'work_done': True,
+                                               'sense_time': time.time()})
                 self._running = False
-            # TODO
-            #  time.sleep(2)
-        # 主进程要求终止后，需要处理的收尾工作
-        if self.cur_State == 5:
-            sense_time = time.time()
-            new_data = [
-                [{'UID': self.UID, 'NID': self.cur_NID, 'VR': self.VR, 'LN': self.cur_LN, 'CE': self.cur_E,
-                  'FS': 5, 'CL': self.cur_PLen, 'RC': self.cur_RCost}]]
-            self.connect_with_center(RoW='W', View_List=[2], GoL='L',
-                                     Datas={'sense_time': sense_time, 'new_data': new_data}, SQLs=None)
-            self.connect_with_center(RoW='W', GoL='G', Compute=True, Func='SetAgentsWorkState',
-                                     args={'work_done': True,
-                                           'sense_time': time.time()})
-            self._running = False
-            print("Notify the center for the ending of drone {}.".format(self.UID))
-        drone_end_clock = time.clock()
-        self.cloud_cpu_clock = drone_end_clock - drone_start_clock - self.connect_cost
-        return None
+                print("Notify the center for the ending of drone {}.".format(self.UID))
+            drone_end_clock = time.clock()
+            self.cloud_cpu_clock = drone_end_clock - drone_start_clock - self.connect_cost
+            return None
+        except Exception as e:
+            print(e)
+            return None
 
     def is_allocated_task(self):
         try:
@@ -826,7 +847,7 @@ class UAV:
 
         # update view map的时候不能只按照concrete local来,有一些数据必须保留,
         # 比如visit_count要在原本数据的基础上加1,当前位置的visited改为True等
-        print(list(concrete_local[0].keys()))
+        # print(list(concrete_local[0].keys()))
         if not isinstance(env.Nodes[self.cur_PX][self.cur_PY], ChargingPoint):
             concrete_local[0][self.cur_NID].visited = True
             concrete_local[0][self.cur_NID].visit_count = self.Local_View_Map.Nodes[self.cur_NID].visit_count + 1
@@ -1703,6 +1724,9 @@ class UAV:
         self.cur_NID = next_nid
         self.cur_PX = next_x
         self.cur_PY = next_y
+        # print(next_nid)
+        if self.Local_View_Map.Nodes[next_nid].visited:
+            self.hybrid_rd += 1
         # self.cur_RCost = self.cur_RCost + random.randint(0, 2 - self.cur_RCost)
         # 损坏状态随机变换,也可以假设始终保持不变
         sense_time = time.time()
@@ -1719,6 +1743,9 @@ class UAV:
         self.cur_NID = next_nid
         self.cur_PX = next_x
         self.cur_PY = next_y
+        # print(next_nid)
+        if global_map[self.UID].Nodes[next_nid].visited:
+            self.broadcast_rd += 1
         sense_time = time.time()
         return sense_time
 
@@ -2331,6 +2358,8 @@ if __name__ == '__main__':
     # Initializing concrete environment
     env = ConcreteEnv(charge_list=[], drone_locs=drone_locs, metadata=metadata)
 
+    yappi.clear_stats()
+    yappi.set_clock_type("wall")
     yappi.start()
     # Shared parameters for monitoring memory usage
     x = []
@@ -2339,7 +2368,7 @@ if __name__ == '__main__':
 
     # Declare fleet and fleet thread
     fleet = []
-    f_ids = []
+    # f_ids = []
     fleet_thread = []
 
 
@@ -2390,7 +2419,7 @@ if __name__ == '__main__':
         # drone_con_thread = Thread(target=fleet[i].test)
         fleet_thread.append(drone_con_thread)
         drone_con_thread.start()
-        f_ids.append(drone_con_thread.ident)
+        # f_ids.append(drone_con_thread.ident)
     # Start memory monitoring threads
     monitor_thread = Thread(target=monitor_memory, args=(0, drone_num))
     monitor_thread.start()
@@ -2403,7 +2432,7 @@ if __name__ == '__main__':
     end_clock = time.clock()
     end_time = time.time()
     print("Center-Drones' activities end!\n")
-    print("Thread ids: ", f_ids)
+    # print("Thread ids: ", f_ids)
     # End monitoring thread
     is_monitoring = False
     monitor_thread.join()
@@ -2439,8 +2468,10 @@ if __name__ == '__main__':
         total_cpu_clock = 0
         max_cpu_clock = 0
         total_path_length = 0
+        total_redundancy = 0
         for i in range(drone_num):
             fw.write("drone {} end work with path length {}.\n".format(i, fleet[i].cur_PLen))
+            fw.write("drone {} end work with redundancy {}.\n".format(i, fleet[i].hybrid_rd))
             fw.write("drone {} cpu time: {}.\n".format(i, fleet[i].cloud_cpu_clock))
             fw.write(
                 "drone {} communication cost: {}, communication count: {}, average communication time: {}.\n".format(
@@ -2448,10 +2479,12 @@ if __name__ == '__main__':
             fw.write("drone {} memory changes {} within time {}.\n".format(i, y[i], x))
             total_cpu_clock += fleet[i].cloud_cpu_clock
             total_path_length += fleet[i].cur_PLen
+            total_redundancy += fleet[i].hybrid_rd
             if fleet[i].cloud_cpu_clock > max_cpu_clock:
                 max_cpu_clock = fleet[i].cloud_cpu_clock
         avg_cpu_clock = total_cpu_clock / drone_num
         avg_path_length = total_path_length / drone_num
+        redundancy_ratio = total_redundancy / (metadata['width']*metadata['height'])
 
         qtool = QueryTool(database='multiAgents')
         qtool.safe_execute("SELECT * FROM grid_nodes")
@@ -2476,8 +2509,10 @@ if __name__ == '__main__':
         ))
         fw.write("final total path length: {}, avg path length:{}.\n".format(total_path_length, avg_path_length))
         fw.write("final coverage ratio: {}.\n".format(coverage_ratio))
+        fw.write("final redundancy ratio: {}.\n".format(redundancy_ratio))
         fw.flush()
 
+    yappi.set_clock_type("wall")
     yappi.start()
     # Reset parameters for memory monitoring
     x.clear()
@@ -2488,7 +2523,7 @@ if __name__ == '__main__':
     # Reset fleet and fleet thread for broadcast fleet
     fleet.clear()
     fleet_thread.clear()
-    f_ids.clear()
+    # f_ids.clear()
     fleet = []
     fleet_thread = []
     f_ids = []
@@ -2525,7 +2560,7 @@ if __name__ == '__main__':
         drone_con_thread = Thread(target=fleet[i].broadcast_run_search, args=(env,))
         fleet_thread.append(drone_con_thread)
         drone_con_thread.start()
-        f_ids.append(drone_con_thread.ident)
+        # f_ids.append(drone_con_thread.ident)
     # Start memory monitoring thread
     monitor_thread = Thread(target=monitor_memory, args=(1, drone_num))
     monitor_thread.start()
@@ -2540,7 +2575,7 @@ if __name__ == '__main__':
     end_clock = time.clock()
     end_time = time.time()
     print("Broadcast-Drones' activities end!\n")
-    print("Thread ids: ", f_ids)
+    # print("Thread ids: ", f_ids)
     # End memory monitoring
     is_monitoring = False
     monitor_thread.join()
@@ -2572,16 +2607,20 @@ if __name__ == '__main__':
         total_cpu_clock = 0
         max_cpu_clock = 0
         total_path_length = 0
+        total_redundancy = 0
         for i in range(drone_num):
             fw.write("drone {} end work with path length {}.\n".format(i, fleet[i].cur_PLen))
+            fw.write("drone {} end work with redundancy {}.\n".format(i, fleet[i].broadcast_rd))
             fw.write("drone {} cpu time: {}.\n".format(i, fleet[i].broadcast_cpu_clock))
             fw.write("drone {} memory changes {} within time {}.\n".format(i, y[i], x))
             total_cpu_clock += fleet[i].broadcast_cpu_clock
             total_path_length += fleet[i].cur_PLen
+            total_redundancy += fleet[i].broadcast_rd
             if fleet[i].broadcast_cpu_clock > max_cpu_clock:
                 max_cpu_clock = fleet[i].broadcast_cpu_clock
         avg_cpu_clock = total_cpu_clock / drone_num
         avg_path_length = total_path_length / drone_num
+        redundancy_ratio = total_redundancy / (metadata['width']*metadata['height'])
 
         tar_count = 0
         complete_count = 0
@@ -2598,6 +2637,7 @@ if __name__ == '__main__':
         ))
         fw.write("final total path length: {}, avg path length:{}.\n".format(total_path_length, avg_path_length))
         fw.write("final coverage ratio: {}.\n".format(coverage_ratio))
+        fw.write("final redundancy ratio: {}.\n".format(redundancy_ratio))
         fw.flush()
 
     # Old Codes

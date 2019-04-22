@@ -48,11 +48,14 @@ class StaticInfo:
         }
         self.THREAD_STACK_SIZE = 65536
         self.EDGE_INX = 100000000
+        self.END = '*'
+
 
 class ExperimentConfig:
 
     def __init__(self):
-        self.timeout = 400  # max simulation time
+        self.timeout = 90000  # max simulation time
+        self.waittime = 30
         self.center_check_interval = 10  # interval(s) of checking for task status
         self.W_Threshold = 0.6  # E charge warning threshold
         self.C_Threshold = 0.8  # E charging threshold
@@ -64,5 +67,8 @@ class ExperimentConfig:
         self.S_max = 10
         self.refuge_prob = 0.05
         self.MAX_LOAD = 10
-        self.MAX_E = 100
+        self.MAX_E = 20000
         self.FLOYD_INTERVAL = 5
+        self.HYBRID_ALPHA_T = 0.8
+        self.HYBRID_ALPHA = 0
+        self.HYBRID_CAL_INTERVAL = 0.5
