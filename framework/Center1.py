@@ -25,6 +25,7 @@ import argparse
 import copy
 import yappi
 
+
 class Center:
     '''
     1. 通信能力：
@@ -51,7 +52,7 @@ class Center:
         self.MAX_QUEUE_LEN = 1000
         self.MAX_CON = 2000
         self.HOST = '127.0.0.1'
-        self.PORT = 8888
+        self.PORT = 8080
         self.socket = None
 
         self.request_queue = []
@@ -94,8 +95,9 @@ class Center:
     def create_request_listener(self):
         try:
             self.socket = socket(AF_INET, SOCK_STREAM)
+            self.socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
             self.socket.bind((self.HOST, self.PORT))
-            self.socket.listen()
+            self.socket.listen(5)
         except Exception as e:
             print(e)
         # print("Socket is now listening.")
@@ -131,8 +133,7 @@ class Center:
             while True:
                 # self.socket.setblocking(0)
                 # ready = select.select([self.socket], [], [], 60)
-                data = conn.recv(1024*1024)
-                # print(data.decode())
+                data = conn.recv(4096)
                 if not data:
                     break
                 data = data.decode()
@@ -160,6 +161,10 @@ class Center:
             self.resp_conditions[request_id] = Condition()
 
             self.after_receive_request(data, request_id)
+            # 如果要删除队列,或许可以直接将process过程放进after_receive_request中,且这样就不需要resp_conditions了
+            # 也就不需要单独的process线程了,按理说con_thread_pool本身就建立了一个多线程的请求处理池,相当于一个消费者,
+            # 真正的生产者应该是agent
+
             # print("uuid is:", request_id)
             # conn.send("Request is in queue.".encode())
 
@@ -1265,6 +1270,7 @@ def get_args():
     parser.add_argument("--sense_range", dest='sense_range', action="store", type=float, default=2.0)
     parser.add_argument("--time_tag", dest='time_tag', action="store", type=str,
                         default=time.strftime("%m%d%H%M", time.localtime()))
+    parser.add_argument("--max_memory", dest='max_memory', action="store", type=float, default=5.0)
 
     args = parser.parse_args()
     return args
@@ -1305,9 +1311,10 @@ if __name__ == "__main__":
     dg.ClearDBInitializer()
 
     dir_name = str(metadata['width']) + '_' + str(metadata['height']) + '_' + str(
-        sum(metadata['agent_num'])) + '_' + metadata['time_tag'] + '_' + str(metadata['view_range'])
+        sum(metadata['agent_num'])) + '_' + metadata['time_tag'] + '_' + str(metadata['view_range']) + '_' + str(
+        metadata['max_memory'])
     root = os.path.abspath(os.path.dirname(os.getcwd()) + os.path.sep + ".")
-    log_dir = os.path.join(os.path.join(root,'log'),dir_name)
+    log_dir = os.path.join(os.path.join(root, 'log'), dir_name)
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 

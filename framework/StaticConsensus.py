@@ -70,5 +70,6 @@ class ExperimentConfig:
         self.MAX_E = 20000
         self.FLOYD_INTERVAL = 5
         self.HYBRID_ALPHA_T = 0.8
-        self.HYBRID_ALPHA = 0
+        self.HYBRID_ALPHA = 1
         self.HYBRID_CAL_INTERVAL = 0.5
+        self.MAX_MEMORY = 3

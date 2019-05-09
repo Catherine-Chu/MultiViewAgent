@@ -29,12 +29,13 @@ import yappi
 global global_map
 global agents_path
 global agents_pos
-global next_pos
+global g_visited
+# global next_pos
 
 global map_lock
 global paths_lock
 global pos_lock
-global next_lock
+# global next_lock
 
 
 class UAV:
@@ -48,8 +49,8 @@ class UAV:
 
             # arguments related to socket connections with center
             self.HOST = '127.0.0.1'
-            self.PORT = 8888
-            self.socket = None
+            self.PORT = 8080
+            # self.socket = None
             self.UID = ID
 
             self.Local_View_Map = LocalViewMap()  # 空局部地图View
@@ -108,7 +109,7 @@ class UAV:
         else:
             self._running = True  # used to control the termination of agent process and its child threads.
             self.STATIC_INFO = StaticInfo()  # static consensus info between agents and center
-            self.experiment_config = ExperimentConfig()
+            self.experiment_config = experiment_config
             self.alpha = self.experiment_config.HYBRID_ALPHA
             self.UID = ID
             self.action_space = [(0, 1, 1), (0, -1, 1), (-1, 0, 1), (1, 0, 1), (0, 0, 1), (0, 0, 0)]
@@ -143,9 +144,9 @@ class UAV:
         # self.connect_cost = 0
 
     def reset(self):
-        if self.socket is not None:
-            self.socket.close()
-        self.socket = None
+        # if self.socket is not None:
+        #     self.socket.close()
+        # self.socket = None
         self._running = True
         # self.state_init()
 
@@ -157,8 +158,8 @@ class UAV:
     def connect_with_center(self, RoW='R', View_List=None, GoL='L', Datas=None, SQLs=None, Compute=False, Func=None,
                             args=None, in_thread=False):
         connect_start = time.clock()
-        self.socket = socket(AF_INET, SOCK_STREAM)
-        self.socket.connect((self.HOST, self.PORT))
+        cur_socket = socket(AF_INET, SOCK_STREAM)
+        cur_socket.connect((self.HOST, self.PORT))
         if not Compute:
             send_data = self.before_send_request(RoW, View_List, GoL, Datas, SQLs)
         else:
@@ -184,8 +185,8 @@ class UAV:
                              'request_time': time.time(),
                              'sense_time': args['sense_time']}
         send_data = json.dumps(send_data)
-        self.socket.send(send_data.encode())
-        self.socket.send("*".encode())
+        cur_socket.send(send_data.encode())
+        cur_socket.send("*".encode())
         get_data = None
         total_data = []
         data = None
@@ -196,7 +197,7 @@ class UAV:
 
                 # self.socket.setblocking(0)
 
-                data = self.socket.recv(4096)
+                data = cur_socket.recv(4096)
                 if not data:
                     # print("Without receiving data.")
                     break
@@ -227,7 +228,7 @@ class UAV:
                 # print("4.",data)
                 if isinstance(data, list) or isinstance(data, dict):
                     # print('1 done')
-                    self.socket.send('Data is received.*'.encode())
+                    cur_socket.send('Data is received.*'.encode())
                     # print('2 done')
                     # self.socket.send("*".encode())
                     # print('3 donne')
@@ -241,9 +242,10 @@ class UAV:
             print("Exception when receiving data from center. May be for bad json.")
             print(get_data)
             print(e)
+            cur_socket.close()
 
         # time.sleep(4)
-        self.socket.close()
+        cur_socket.close()
         connect_end = time.clock()
         if not in_thread:
             self.connect_cost += (connect_end - connect_start)
@@ -331,13 +333,15 @@ class UAV:
         self.cur_State = 1
 
         def update_shared_map():
+            g_visited[self.cur_NID] = True
             for pl in range(len(pos_lock)):
                 with pos_lock[pl]:
                     agents_pos[pl][self.UID] = self.cur_NID
 
+            within_nodes = []
             for lock_i, map_lock_i in enumerate(map_lock):
                 with map_lock_i:
-                    within_nodes = []
+                    within_nodes.clear()
                     for i in range(self.cur_PX - self.SR, self.cur_PX + self.SR + 1, 1):
                         for j in range(self.cur_PY - self.SR, self.cur_PY + self.SR + 1, 1):
                             if 0 <= i < env.width and 0 <= j < env.height:
@@ -359,11 +363,46 @@ class UAV:
                                 env_edge = env.Edges[global_map[lock_i].Edges[e_key].EID]
                                 global_map[lock_i].Edges[e_key] = env_edge
 
+            return True, within_nodes
+
+        def map_random_lose(maxr, within_nodes):
+            maxn = int((2*maxr+1)*(2*maxr+1))
+            n_list=list(range(len(global_map[self.UID].Nodes)))
+            left_list = list(set(n_list).difference(set(within_nodes)))
+            if maxn>=len(within_nodes):
+                if maxn-len(within_nodes)<= len(left_list):
+                    final_list = random.sample(left_list, maxn - len(within_nodes))
+                else:
+                    final_list = left_list
+                final_list.extend(within_nodes)
+            else:
+                final_list = within_nodes
+            for i in range(len(global_map[self.UID].Nodes)):
+                if i not in final_list:
+                    if global_map[self.UID].Nodes[i].blocked:
+                        global_map[self.UID].Nodes[i].blocked = False
+                        x = int(i / env.height)
+                        y = int(i % env.height)
+                        direct = [(0,1),(0,-1),(1,0),(-1,0)]
+                        for dir in direct:
+                            to_x = x+dir[0]
+                            to_y = y+dir[1]
+                            if 0<=to_x<env.width and 0<=to_y<env.height:
+                                to_p = to_x*env.height + to_y
+                                if not global_map[self.UID].Nodes[to_p].blocked:
+                                    e_key = str(i)+'_'+str(to_p)
+                                    global_map[self.UID].Edges[e_key].distance = 1
+                                    e_key = str(to_p)+'_'+str(i)
+                                    global_map[self.UID].Edges[e_key].distance = 1
+                    else:
+                        global_map[self.UID].Nodes[i].visited = False
+
             return True
 
-        def BoB_movement(scale):
+        def BoB_movement(scale, within_nodes=None):
             if len(self.path_buffer) == 0:
                 with map_lock[self.UID]:
+                    map_random_lose(self.experiment_config.MAX_MEMORY, within_nodes)
                     not_end_point, next_x, next_y, self.his_step = boustrophedon_step(global_map[self.UID], scale,
                                                                                       self.action_space,
                                                                                       self.cur_PX, self.cur_PY,
@@ -432,9 +471,9 @@ class UAV:
                         next_nid = None
                         next_x = None
                         next_y = None
-                    with next_lock[self.UID]:
-                        if next_nid in list(next_pos[self.UID].values()):
-                            time.sleep(0.2)
+                    # with next_lock[self.UID]:
+                    #     if next_nid in list(next_pos[self.UID].values()):
+                    #         time.sleep(0.2)
                 return next_nid, next_x, next_y
             else:
                 # if path_buffer is not empty, then there exist a path through covered area (known area
@@ -454,6 +493,7 @@ class UAV:
                     break
             return result
 
+        max_step = 2*(env.width * env.height) # 400%的冗余度
         while self._running:
             time.sleep(0.5)
             if self.cur_State == 0:
@@ -462,11 +502,12 @@ class UAV:
             elif self.cur_State == 1:
                 if self.TID == 0:
                     # working in search_coverage_task
-                    if not is_done():
-                        update_shared_map()
-                        next_nid, next_x, next_y = BoB_movement((env.width, env.height))
+                    if max_step>0 and not is_done():
+                        _, within_nodes = update_shared_map()
+                        next_nid, next_x, next_y = BoB_movement((env.width, env.height),within_nodes)
                         if next_nid is not None:
                             sense_time = self.bob_move(next_nid, next_x, next_y)
+                            max_step -= 1
                         else:
                             self.cur_State = 5
                             break
@@ -1152,34 +1193,37 @@ class UAV:
                             else:
                                 self.path_buffer = None
 
-                            # global planning
-                            con_thread = MyThread(func=self.connect_with_center,
-                                                  args=('R', None, 'G', None, None, True, 'H_BoB_BT_Paths', None, True))
-                            con_thread.start()
-
-                            # get_data = self.connect_with_center(RoW='R', GoL='G', Compute=True,
-                            #                                        Func='H_BoB_BT_Paths')
-
-                            if not self.path_buffer or self.alpha < self.experiment_config.HYBRID_ALPHA_T:
-                                con_wait_time = time.clock()
-                                get_data = con_thread.get_result()
-                                con_wait_time = time.clock() - con_wait_time
-                                self.connect_cost += con_wait_time
-                                self.connect_count += 1
-                                if get_data:
-                                    if get_data[0]:
-                                        # print("get_path from center:", get_data)
-                                        self.path_buffer = copy.deepcopy(get_data[0])
-                                    else:
-                                        print("No valid backtracking path, work done!")
-                                        self.path_buffer = None
-                                else:
-                                    while not get_data:
-                                        print("Error! Don't get back_paths from center, try again!")
-                                        get_data = self.connect_with_center(RoW='R', GoL='G', Compute=True,
-                                                                            Func='H_BoB_BT_Paths')
-                                    self.path_buffer = copy.deepcopy(get_data[0])
-
+                            # # global planning
+                            # con_thread = MyThread(func=self.connect_with_center,
+                            #                       args=('R', None, 'G', None, None, True, 'H_BoB_BT_Paths', None, True))
+                            # con_thread.start()
+                            #
+                            # # get_data = self.connect_with_center(RoW='R', GoL='G', Compute=True,
+                            # #                                        Func='H_BoB_BT_Paths')
+                            #
+                            # if not self.path_buffer or self.alpha < self.experiment_config.HYBRID_ALPHA_T:
+                            #     con_wait_time = time.clock()
+                            #     get_data = con_thread.get_result()
+                            #     con_wait_time = time.clock() - con_wait_time
+                            #     self.connect_cost += con_wait_time
+                            #     self.connect_count += 1
+                            #     if get_data:
+                            #         if get_data[0]:
+                            #             # print("get_path from center:", get_data)
+                            #             self.path_buffer = copy.deepcopy(get_data[0])
+                            #         else:
+                            #             print("No valid backtracking path, work done!")
+                            #             self.path_buffer = None
+                            #     else:
+                            #         while not get_data:
+                            #             print("Error! Don't get back_paths from center, try again!")
+                            #             get_data = self.connect_with_center(RoW='R', GoL='G', Compute=True,
+                            #                                                 Func='H_BoB_BT_Paths')
+                            #         self.path_buffer = copy.deepcopy(get_data[0])
+                            #
+                            # # 由于SetAgentsPath请求是在H_BoB_BT_Paths请求同时/之后发出的,而center如果是根据请求队列顺序处理请求的话,
+                            # # 就算agent这里没有等待H_BoB_BT_Paths返回结果,在等待SetAgentsPath返回的时候实际上还是要等center处理完
+                            # # 上一个请求
                             self.connect_with_center(RoW='W', GoL='G', Compute=True, Func='SetAgentsPath',
                                                      args={'back_paths': self.path_buffer,
                                                            'sense_time': time.time()})
@@ -1744,7 +1788,9 @@ class UAV:
         self.cur_PX = next_x
         self.cur_PY = next_y
         # print(next_nid)
-        if global_map[self.UID].Nodes[next_nid].visited:
+        # if global_map[self.UID].Nodes[next_nid].visited:
+        #     self.broadcast_rd += 1
+        if g_visited[next_nid]:
             self.broadcast_rd += 1
         sense_time = time.time()
         return sense_time
@@ -2274,8 +2320,8 @@ def get_size(obj, seen=None):
         # self-referential objects
         seen.add(obj_id)
         if isinstance(obj, dict):
-            size += sum([get_size(v, seen) for v in obj.values()])
-            size += sum([get_size(k, seen) for k in obj.keys()])
+            size += sum([get_size(v, seen) for v in list(obj.values())])
+            size += sum([get_size(k, seen) for k in list(obj.keys())])
         elif hasattr(obj, '__dict__'):
             size += get_size(obj.__dict__, seen)
         elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
@@ -2302,6 +2348,7 @@ def get_args():
     parser.add_argument("--sense_range", dest='sense_range', action="store", type=float, default=2.0)
     parser.add_argument("--time_tag", dest='time_tag', action="store", type=str,
                         default=time.strftime("%m%d%H%M", time.localtime()))
+    parser.add_argument("--max_memory", dest='max_memory', action="store", type=float, default=5.0)
 
     args = parser.parse_args()
     return args
@@ -2349,7 +2396,7 @@ if __name__ == '__main__':
         'width'] * 2
     time_str = metadata["time_tag"]
     dir_name = str(metadata['width']) + '_' + str(metadata['height']) + '_' + str(
-        drone_num) + '_' + time_str + '_' + str(metadata['view_range'])
+        drone_num) + '_' + time_str + '_' + str(metadata['view_range']) + '_' + str(metadata['max_memory'])
     root = os.path.abspath(os.path.dirname(os.getcwd()) + os.path.sep + ".")
     log_dir = os.path.join(os.path.join(root, 'log'), dir_name)
     if not os.path.exists(log_dir):
@@ -2370,6 +2417,8 @@ if __name__ == '__main__':
     fleet = []
     # f_ids = []
     fleet_thread = []
+    exper_config = ExperimentConfig()
+    exper_config.MAX_MEMORY = metadata['max_memory']
 
 
     # Define memory monitoring method
@@ -2414,7 +2463,7 @@ if __name__ == '__main__':
 
     # Start the cloud-supported fleet threads
     for i in range(drone_num):
-        fleet.append(UAV(ID=i, experiment_config=ExperimentConfig()))
+        fleet.append(UAV(ID=i, experiment_config=exper_config))
         drone_con_thread = Thread(target=fleet[i].run, args=(env,))
         # drone_con_thread = Thread(target=fleet[i].test)
         fleet_thread.append(drone_con_thread)
@@ -2533,30 +2582,31 @@ if __name__ == '__main__':
     for i in range(drone_num):
         global_map.append(GlobalViewMap(scale=(env.width, env.height)))
     agents_path = []
-    next_pos = []
+    # next_pos = []
     agents_pos = []
     for i in range(drone_num):
         agents_path.append(dict({}))
-        next_pos.append(dict({}))
+        # next_pos.append(dict({}))
         agents_pos.append(dict({}))
         for j in range(drone_num):
             agents_path[i][j] = []
-            next_pos[i][j] = -1
+            # next_pos[i][j] = -1
+    g_visited = [False for i in range(env.width*env.height)]
     # Declare global data locks for shared parameters in broadcast simulation
     map_lock = []
     paths_lock = []
-    next_lock = []
+    # next_lock = []
     pos_lock = []
     for i in range(drone_num):
         map_lock.append(Lock())
         paths_lock.append(Lock())
-        next_lock.append(Lock())
+        # next_lock.append(Lock())
         pos_lock.append(Lock())
     # Start the broadcast drone threads
     for i in range(drone_num):
         fleet.append(
             UAV(ID=i, X=int(drone_locs[0][i] / env.height), Y=int(drone_locs[0][i] % env.height),
-                NID=drone_locs[0][i]))
+                NID=drone_locs[0][i], experiment_config=exper_config))
         drone_con_thread = Thread(target=fleet[i].broadcast_run_search, args=(env,))
         fleet_thread.append(drone_con_thread)
         drone_con_thread.start()
@@ -2624,13 +2674,15 @@ if __name__ == '__main__':
 
         tar_count = 0
         complete_count = 0
-        for i in range(len(env.Nodes)):
-            for j in range(len(env.Nodes[i])):
-                if not env.Nodes[i][j].blocked:
-                    tar_count += 1
-                    tar_id = i * env.height + j
-                    if global_map[0].Nodes[tar_id].visited:
-                        complete_count += 1
+        # for i in range(len(env.Nodes)):
+        #     for j in range(len(env.Nodes[i])):
+        #         if not env.Nodes[i][j].blocked:
+        #             tar_count += 1
+        #             tar_id = i * env.height + j
+        #             if global_map[0].Nodes[tar_id].visited:
+        #                 complete_count += 1
+        complete_count =sum(g_visited)
+        tar_count = env.width * env.height - int(metadata['obstacle_num'])
         coverage_ratio = complete_count / tar_count
         fw.write("final total cpu clock: {}, avg cpu clock: {}, max cpu clock: {}.\n".format(
             total_cpu_clock, avg_cpu_clock, max_cpu_clock
